@@ -116,7 +116,7 @@
     if (!done) return;
     bar.style.width = '0';
     canvas.classList.remove('drawing');
-    caption.innerHTML = `Plate <b>No. ${seed}</b>`;
+    caption.innerHTML = `Plate <b>No. ${seed}</b> · ${Engraver.makeScene(seed).title}`;
     saveBtn.disabled = false;
   }
 
