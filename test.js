@@ -13,3 +13,6 @@ const seen = new Set();
 for (let s = 1; s <= 100; s++) seen.add(makeScene(s).kind);
 assert.strictEqual(seen.size, 5, 'all five scene types should appear');
 console.log('ok', [...seen].join(', '));
+// Road width must stay finite at and just past its far end (float drift).
+const { roadAtForTest } = require('./draw.js');
+if (roadAtForTest) for (const s of [0, 0.5, 1, 1.0000000000000002]) assert.ok(isFinite(roadAtForTest({ x0: 0, x1: 1, yEnd: 0, amp: 1, k: 1, ph: 0 }, s).w));

@@ -5,13 +5,19 @@
 'use strict';
 
 const W = 1500, H = 1000, MARGIN = 40;
-const INK = '#1c140d', PAPER = '#ebe1c9', GRAPHITE = 'rgba(70,64,58,0.38)';
+const INK = '#1c140d', PAPER = '#ebe1c9', GRAPHITE = 'rgba(70,64,58,0.24)';
 // Layer ids live in the red channel of the mask canvas, spaced so antialiased
 // edge pixels snap back to a neighbouring layer.
 const SKY = 10, FAR = 35, CRAG = 60, CASTLE = 85, VALLEY = 110, WATER = 135, GROUND = 160, ROCK = 185, TREE = 210, LEAF = 235;
 const IDS = [SKY, FAR, CRAG, CASTLE, VALLEY, WATER, GROUND, ROCK, TREE, LEAF];
-// Replay time per phase: about 60 s of drawing, then the print is pulled.
-const TIMING = { pencil: 14000, outline: 6000, hatch: 34000, detail: 6000, print: 1600 };
+// Replay time per phase and how many hands draw at once: about 60 s of
+// drawing, hatching built up light to dark in three passes, then the print.
+const PHASES = [
+  ['pencil', 12000, 2], ['outline', 6000, 2], ['pass1', 18000, 4], ['pass2', 11000, 4],
+  ['pass3', 5000, 4], ['detail', 7000, 3], ['print', 1600, 1],
+];
+// Pause between strokes, as pixels of travel.
+const LIFT = 5;
 
 function mulberry32(a) {
   return function () {
@@ -73,7 +79,7 @@ function roadAt(rd, s) {
   return {
     x: rd.x0 + (rd.x1 - rd.x0) * s + Math.sin(s * Math.PI * rd.k + rd.ph) * rd.amp * (1 - s),
     y: H + 10 + (rd.yEnd - H - 10) * s,
-    w: 110 * Math.pow(1 - s, 1.3) + 5,
+    w: 110 * Math.pow(Math.max(0, 1 - s), 1.3) + 5,
   };
 }
 
@@ -418,37 +424,91 @@ const BANDS = [[0.04, 0.55, 0.6], [0.42, 0.82, 0.45], [0.72, 1, 0.4]];
 
 const tick = () => new Promise(res => setTimeout(res, 0));
 
-// Replays each phase's ops spread evenly over its time. Waits for a phase the
-// producer has not finished; token.skip draws the rest as fast as possible.
-function play(ctx, phases, token, onProgress) {
+// Each phase is a set of hands; each hand draws its strokes in order, every
+// stroke growing along its path at the hand's pace so the hand finishes with
+// the phase. Waits for a phase the producer has not finished; token.skip
+// draws the rest as fast as possible.
+function play(ctx, phases, token, onProgress, overlay) {
   const total = phases.reduce((a, p) => a + p.ms, 0);
+  const oc = overlay && overlay.getContext('2d');
   return new Promise(resolve => {
-    let pi = 0, idx = 0, t0 = null, before = 0;
+    let pi = 0, t0 = null, before = 0, hs = null;
+    const finish = ok => { if (oc) oc.clearRect(0, 0, W, H); resolve(ok); };
     function frame(now) {
-      if (token.cancelled) return resolve(false);
+      if (token.cancelled) return finish(false);
       const started = performance.now();
-      while (pi < phases.length) {
+      let out = false;
+      while (pi < phases.length && !out) {
         const ph = phases[pi];
         if (!ph.ready) break;
         if (t0 === null) t0 = now;
-        const n = ph.ops.length;
-        const target = token.skip ? n : Math.min(n, Math.ceil(n * (now - t0) / ph.ms));
-        while (idx < target) {
-          ph.ops[idx++](ctx);
-          if (token.skip && (idx & 63) === 0 && performance.now() - started > 40) break;
+        if (!hs) hs = ph.hands.map(list => ({ list, i: 0, at: 0, done: 0, total: list.reduce((a, st) => a + st.len + LIFT, 0) }));
+        const f = token.skip ? 1 : Math.min(1, (now - t0) / ph.ms);
+        let left = 0;
+        for (const h of hs) {
+          // At f = 1 every stroke must finish, whatever the float sum of lengths says.
+          const target = f >= 1 ? Infinity : f * h.total;
+          while (h.i < h.list.length) {
+            const st = h.list[h.i], into = target - h.done;
+            if (into <= 0) break;
+            const frac = Math.min(1, into / st.len);
+            if (st.n === 1) { if (!h.at) { st.draw(ctx); h.at = 1; } }
+            else {
+              // Pen speed eases in and out within each stroke.
+              const k = Math.round(smooth(0, 1, frac) * (st.n - 1));
+              if (k > h.at) { st.draw(ctx, h.at, k); h.at = k; }
+            }
+            if (target < h.done + st.len + LIFT) break;
+            h.done += st.len + LIFT; h.i++; h.at = 0;
+            if (token.skip && (h.i & 31) === 0 && performance.now() - started > 40) { out = true; break; }
+          }
+          left += h.list.length - h.i;
+          if (out) break;
         }
-        onProgress((before + ph.ms * (n ? idx / n : 1)) / total);
-        if (idx < n) break;
-        before += ph.ms; pi++; idx = 0; t0 = now;
+        onProgress((before + ph.ms * f) / total);
+        if (out || left) break;
+        before += ph.ms; pi++; t0 = now; hs = null;
       }
-      if (pi >= phases.length) return resolve(true);
+      if (oc) {
+        oc.clearRect(0, 0, W, H);
+        if (hs && !token.skip) for (const h of hs) {
+          const st = h.list[h.i], tip = st && st.tip && st.tip(h.at);
+          if (tip) drawNib(oc, tip[0], tip[1], phases[pi].name === 'pencil');
+        }
+      }
+      if (pi >= phases.length) return finish(true);
       requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);
   });
 }
 
-async function render(canvas, seed, { onProgress = () => {}, token = {} } = {}) {
+// A dip pen, or a pencil during the underdrawing, held up and to the right of its tip.
+function drawNib(c, x, y, pencil) {
+  c.save();
+  c.translate(x, y); c.rotate(-1.0);
+  for (const shadow of [true, false]) {
+    c.save();
+    if (shadow) { c.translate(10, 14); c.globalAlpha = 0.18; }
+    const tone = (a, b) => (shadow ? '#000' : pencil ? a : b);
+    c.fillStyle = tone('#7b5a36', '#4a3222');
+    c.fillRect(pencil ? 24 : 30, -6, 150, 12);
+    c.fillStyle = tone('#d8bb8c', '#8c8a86');
+    c.beginPath();
+    if (pencil) { c.moveTo(0, 0); c.lineTo(24, -6); c.lineTo(24, 6); }
+    else { c.moveTo(0, 0); c.lineTo(18, -5); c.lineTo(30, -5); c.lineTo(30, 5); c.lineTo(18, 5); }
+    c.closePath(); c.fill();
+    if (!shadow) {
+      c.fillStyle = pencil ? '#3a3632' : '#2a2724';
+      c.beginPath(); c.moveTo(0, 0); c.lineTo(pencil ? 7 : 12, -2); c.lineTo(pencil ? 7 : 12, 2); c.closePath(); c.fill();
+      if (!pencil) { c.strokeStyle = '#2a2724'; c.lineWidth = 0.8; c.beginPath(); c.moveTo(4, 0); c.lineTo(20, 0); c.stroke(); }
+    }
+    c.restore();
+  }
+  c.restore();
+}
+
+async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay = null } = {}) {
   const sc = makeScene(seed), N = noiseFor(seed), R2 = mulberry32((seed + 7919) >>> 0);
   const { sun, waterY, sky } = sc;
   canvas.width = W; canvas.height = H;
@@ -465,23 +525,36 @@ async function render(canvas, seed, { onProgress = () => {}, token = {} } = {}) 
   ctx.putImageData(paper, 0, 0);
   ctx.save(); ctx.beginPath(); ctx.rect(MARGIN, MARGIN, W - 2 * MARGIN, H - 2 * MARGIN); ctx.clip();
 
-  const [pencilOps, outlineOps, hatchOps, detailOps] = ['pencil', 'outline', 'hatch', 'detail'].map(() => []);
-  const printOps = [];
-  const phases = [pencilOps, outlineOps, hatchOps, detailOps, printOps].map((ops, i) => ({ ops, ms: Object.values(TIMING)[i], ready: false }));
-  const player = play(ctx, phases, token, onProgress);
+  const phases = PHASES.map(([name, ms, hands]) => ({ name, ms, handCount: hands, hands: null, ready: false }));
+  const player = play(ctx, phases, token, onProgress, overlay);
+  const [pencilOps, outlineOps, , , , detailOps, printOps] = phases.map(() => []);
+  // Split an ordered stroke list into contiguous runs of equal ink length, one per hand.
+  const ready = (i, list) => {
+    const strokes = list.map(o => (typeof o === 'function' ? { n: 1, len: 12, draw: o } : o));
+    const k = phases[i].handCount, sum = strokes.reduce((a, st) => a + st.len, 0), hands = Array.from({ length: k }, () => []);
+    let acc = 0;
+    for (const st of strokes) { hands[Math.min(k - 1, Math.floor(acc / (sum || 1) * k))].push(st); acc += st.len; }
+    phases[i].hands = hands; phases[i].ready = true;
+  };
 
-  // Op builders. Long lines are cut into short pieces so they draw progressively.
+  // Strokes. Each knows its point count, ink length, where its tip is, and how
+  // to draw the stretch between two of its points (overlapping the last one).
   let jo = 0;
   const jitter = (pts, jit) => { jo += 13.7; return pts.map(([x, y], i) => [x + N.n2(i * 0.3, jo) * jit, y + N.n2(jo, i * 0.3) * jit]); };
-  const strokeOp = (pts, w, color) => c => {
-    c.strokeStyle = color; c.lineWidth = w; c.lineCap = 'round'; c.lineJoin = 'round';
-    c.beginPath(); pts.forEach(([x, y], i) => (i ? c.lineTo(x, y) : c.moveTo(x, y))); c.stroke();
+  const lineStroke = (pts, w, color) => {
+    let len = 0;
+    for (let k = 1; k < pts.length; k++) len += Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
+    return {
+      n: pts.length, len: Math.max(1, len), tip: k => pts[k],
+      draw: (c, a, b) => {
+        c.strokeStyle = color; c.lineWidth = w; c.lineCap = 'round'; c.lineJoin = 'round';
+        c.beginPath(); c.moveTo(pts[a][0], pts[a][1]);
+        for (let k = a + 1; k <= b; k++) c.lineTo(pts[k][0], pts[k][1]);
+        c.stroke();
+      },
+    };
   };
-  const lineOps = (list, pts, w, color, jit, chunk = 8) => {
-    if (pts.length < 2) return;
-    const j = jitter(pts, jit);
-    for (let i = 0; i < j.length - 1; i += chunk) list.push(strokeOp(j.slice(i, i + chunk + 1), w, color));
-  };
+  const lineOps = (list, pts, w, color, jit) => { if (pts.length >= 2) list.push(lineStroke(jitter(pts, jit), w, color)); };
   const segsOp = (segs, w) => c => {
     c.strokeStyle = INK; c.lineWidth = w; c.lineCap = 'round'; c.beginPath();
     for (const s of segs) { c.moveTo(s[0], s[1]); for (let k = 2; k < s.length; k += 2) c.lineTo(s[k], s[k + 1]); }
@@ -492,27 +565,38 @@ async function render(canvas, seed, { onProgress = () => {}, token = {} } = {}) 
   const every = (pts, n) => pts.filter((_, i) => i % n === 0 || i === pts.length - 1);
 
   // 1. Pencil underdrawing straight from the scene geometry.
-  const pencil = (pts, chunk = 5) => lineOps(pencilOps, pts, 0.9, GRAPHITE, 1.2, chunk);
-  pencil([[MARGIN, waterY], [W / 2, waterY + 1], [W - MARGIN, waterY]], 1);
+  // Two or three light, searching attempts per contour, overshooting the ends.
+  const pencil = pts => {
+    if (pts.length < 2) return;
+    const ext = (p, q, d) => { const l = Math.hypot(p[0] - q[0], p[1] - q[1]) || 1; return [p[0] + (p[0] - q[0]) / l * d, p[1] + (p[1] - q[1]) / l * d]; };
+    for (let a = 0, n = 2 + (R2() < 0.4 ? 1 : 0); a < n; a++) {
+      const cut = Math.floor(R2() * pts.length * 0.12);
+      const body = a ? pts.slice(a === 1 ? cut : 0, pts.length - (a === 1 ? 0 : cut)) : pts;
+      if (body.length < 2) continue;
+      const line = [ext(body[0], body[1], 4 + R2() * 12), ...body, ext(body[body.length - 1], body[body.length - 2], 4 + R2() * 12)];
+      lineOps(pencilOps, line, 0.8, GRAPHITE, 1.2 + a * 1.4);
+    }
+  };
+  pencil([[MARGIN, waterY], [W / 2, waterY + 1], [W - MARGIN, waterY]]);
   for (const f of sc.far) pencil(every(f.pts, 2));
-  if (sc.fall) pencil(closed(sc.fall.pts), 3);
-  for (const st of sc.structures) { pencil(closed(st.pts), 3); for (const h of st.holes || []) pencil(closed(h), 3); }
+  if (sc.fall) pencil(closed(sc.fall.pts));
+  for (const st of sc.structures) { pencil(closed(st.pts)); for (const h of st.holes || []) pencil(closed(h)); }
   for (const c of sc.crags) {
     pencil(every(c.edge || c.pts, 2));
-    if (c.castle) for (const p of c.castle.parts) if (!p.window) pencil(closed(p.pts), 3);
+    if (c.castle) for (const p of c.castle.parts) if (!p.window) pencil(closed(p.pts));
   }
   pencil(every(sc.ground, 2));
   if (sc.road) for (const side of [-0.5, 0.5]) {
     const pts = [];
     for (let s = 0; s <= 1.0001; s += 0.04) { const q = roadAt(sc.road, s); pts.push([q.x + side * q.w, q.y]); }
-    pencil(pts, 3);
+    pencil(pts);
   }
-  for (const rk of sc.rocks) pencil(closed(every(rk.pts, 2)), 3);
+  for (const rk of sc.rocks) pencil(closed(every(rk.pts, 2)));
   for (const t of sc.trees) {
-    for (const s of t.segs) if (s[4] > 2) pencil([[s[0], s[1]], [s[2], s[3]]], 1);
-    for (const c of t.clumps) pencil(closed(every(c, 4)), 4);
+    for (const s of t.segs) if (s[4] > 2) pencil([[s[0], s[1]], [s[2], s[3]]]);
+    for (const c of t.clumps) pencil(closed(every(c, 4)));
   }
-  phases[0].ready = true;
+  ready(0, pencilOps);
   await tick();
   if (token.cancelled) return player;
 
@@ -607,7 +691,7 @@ async function render(canvas, seed, { onProgress = () => {}, token = {} } = {}) 
       for (const sg of [1, -1]) lineOps(outlineOps, [[s[0] + px * sg * s[4] / 2, s[1] + py * sg * s[4] / 2], [s[2] + px * sg * s[5] / 2, s[3] + py * sg * s[5] / 2]], 1.3, INK, 0.3);
     }
   }
-  phases[1].ready = true;
+  ready(1, outlineOps);
   await tick();
   if (token.cancelled) return player;
 
@@ -756,11 +840,46 @@ async function render(canvas, seed, { onProgress = () => {}, token = {} } = {}) 
     { id: TREE, sp: 2.6, wk: 1, rot: [0, Math.PI / 2, 0.6] },
     { id: LEAF, sp: 3, wk: 1, rot: [0, 1.2, -1] },
   ];
-  const runOp = poly => c => {
-    c.fillStyle = INK; c.beginPath(); c.moveTo(poly[0], poly[1]);
-    for (let k = 2; k < poly.length; k += 2) c.lineTo(poly[k], poly[k + 1]);
-    c.closePath(); c.fill();
+  // A hatch line as a growable filled stroke; key orders neighbours side by side.
+  const fillStroke = (run, layer) => {
+    const n = run.length / 3, poly = runPoly(run);
+    let len = 0;
+    for (let k = 1; k < n; k++) len += Math.hypot(run[k * 3] - run[k * 3 - 3], run[k * 3 + 1] - run[k * 3 - 2]);
+    let dx = run[run.length - 3] - run[0], dy = run[run.length - 2] - run[1];
+    const l = Math.hypot(dx, dy) || 1;
+    if (dx < 0 || (dx === 0 && dy < 0)) { dx = -dx; dy = -dy; }
+    const mx = run[(n >> 1) * 3], my = run[(n >> 1) * 3 + 1];
+    return {
+      n, len: Math.max(1, len), layer, mx, my, key: (-dy * mx + dx * my) / l, tip: k => [run[k * 3], run[k * 3 + 1]],
+      draw: (c, a, b) => {
+        a = Math.max(0, a - 1);
+        c.fillStyle = INK; c.beginPath(); c.moveTo(poly[a * 2], poly[a * 2 + 1]);
+        for (let k = a + 1; k <= b; k++) c.lineTo(poly[k * 2], poly[k * 2 + 1]);
+        for (let k = b; k >= a; k--) c.lineTo(poly[(2 * n - 1 - k) * 2], poly[(2 * n - 1 - k) * 2 + 1]);
+        c.closePath(); c.fill();
+      },
+    };
   };
+  // Visit 140 px patches nearest-first; inside a patch, lay lines side by side.
+  const tour = strokes => {
+    const C = 140, cells = new Map(), out = [];
+    for (const st of strokes) {
+      const key = ((st.my / C) | 0) * 100 + ((st.mx / C) | 0);
+      if (!cells.has(key)) cells.set(key, []);
+      cells.get(key).push(st);
+    }
+    const keys = [...cells.keys()];
+    let cx = 0, cy = 0;
+    while (keys.length) {
+      let bi = 0, bd = Infinity;
+      keys.forEach((k, i) => { const d = (k % 100 - cx) ** 2 + (((k / 100) | 0) - cy) ** 2; if (d < bd) { bd = d; bi = i; } });
+      const k = keys.splice(bi, 1)[0];
+      cx = k % 100; cy = (k / 100) | 0;
+      out.push(...cells.get(k).sort((a, b) => a.layer - b.layer || a.key - b.key));
+    }
+    return out;
+  };
+  const passes = [[], [], []];
   // Run = flat [x, y, width, ...]; outline both sides, tapering the ends like a burin cut.
   const runPoly = run => {
     const n = run.length / 3, poly = new Float32Array(n * 4);
@@ -797,8 +916,9 @@ async function render(canvas, seed, { onProgress = () => {}, token = {} } = {}) 
       // left; restart it on the leftover seeds with every earlier point
       // pre-loaded into its spacing grid.
       const lines = [], placed = [];
-      let pending = seeds;
-      while (pending.length && !token.cancelled) {
+      // ponytail: capped at 15 restarts per layer pass; tiny leftover gaps stay bare. Raise if gaps show.
+      let pending = seeds, runs = 0;
+      while (pending.length && !token.cancelled && runs++ < 15) {
         const job = SL({
           vectorField: p => {
             if (ok(p.x, p.y) < 0) return;
@@ -816,11 +936,10 @@ async function render(canvas, seed, { onProgress = () => {}, token = {} } = {}) 
         pending = pending.filter(q => !grid.isTaken(q.x, q.y, d => d < gr.sp));
       }
       if (token.cancelled) return player;
-      // Split each streamline where the tone is too light to cut, then queue top to bottom.
-      const ops = [];
+      // Split each streamline where the tone is too light to cut.
       for (const pts of lines) {
         let run = [];
-        const cut = () => { if (run.length >= 6) ops.push([run[1], runOp(runPoly(run))]); run = []; };
+        const cut = () => { if (run.length >= 6) passes[f].push(fillStroke(run, gr.id)); run = []; };
         for (const [x, y] of pts) {
           const i = ok(x, y);
           const w = i < 0 ? 0 : gr.sp * gr.wk * wmax * Math.pow(clamp((1 - tone[i] - d0) / (d1 - d0)), 0.9);
@@ -828,11 +947,9 @@ async function render(canvas, seed, { onProgress = () => {}, token = {} } = {}) 
         }
         cut();
       }
-      ops.sort((a, b) => a[0] - b[0]);
-      for (const [, op] of ops) hatchOps.push(op);
     }
   }
-  phases[2].ready = true;
+  passes.forEach((list, f) => ready(2 + f, tour(list)));
 
   // 6. Details: fissures, masonry, leaves, grass, figures, birds, plate rule.
   // Stone courses show only on the lit face.
@@ -936,7 +1053,7 @@ async function render(canvas, seed, { onProgress = () => {}, token = {} } = {}) 
       c.quadraticCurveTo(x - s / 2, y - s / 2, x, y); c.quadraticCurveTo(x + s / 2, y - s / 2, x + s, y); c.stroke();
     });
   }
-  detailOps.push(c => {
+  printOps.push(c => {
     c.restore();
     c.strokeStyle = INK;
     c.lineWidth = 1.6; c.strokeRect(MARGIN, MARGIN, W - 2 * MARGIN, H - 2 * MARGIN);
@@ -944,7 +1061,7 @@ async function render(canvas, seed, { onProgress = () => {}, token = {} } = {}) 
     c.fillStyle = INK; c.font = 'italic 17px "IM Fell English", Georgia, serif'; c.textAlign = 'right';
     c.fillText(`Pl. ${seed}`, W - MARGIN, H - 12);
   });
-  phases[3].ready = true;
+  ready(5, detailOps);
 
   // 7. Pull the print: ink spreads into the paper, filling hairline gaps in
   // dense shading, and solid blacks pick up tiny paper speckles. Fades in.
@@ -958,7 +1075,7 @@ async function render(canvas, seed, { onProgress = () => {}, token = {} } = {}) 
     after.getContext('2d').putImageData(out, 0, 0);
   });
   for (let k = 1; k <= 30; k++) printOps.push(c => { c.globalAlpha = 1; c.drawImage(before, 0, 0); c.globalAlpha = k / 30; c.drawImage(after, 0, 0); c.globalAlpha = 1; });
-  phases[4].ready = true;
+  ready(6, printOps);
   return player;
 }
 
@@ -996,6 +1113,6 @@ function quad(m, [x1, y1, x2, y2, wa, wb]) {
   m.closePath();
 }
 
-const api = { makeScene, render, W, H };
+const api = { makeScene, render, W, H, roadAtForTest: roadAt };
 if (typeof module !== 'undefined') module.exports = api; else root.Engraver = api;
 })(this);
