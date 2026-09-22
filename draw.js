@@ -1,14 +1,17 @@
-// Seeded landscape engraver. makeScene(seed) builds plain data; render() paints it
-// as hatched ink lines whose width follows a hidden tone map, like a Doré plate.
+// Seeded landscape engraver. makeScene(seed) builds plain data; render() turns it
+// into stroke lists (pencil, ink outline, hatching, details) and replays them
+// slowly, so the plate appears the way an engraver would work it.
 (function (root) {
 'use strict';
 
 const W = 1500, H = 1000, MARGIN = 40;
-const INK = '#1c140d', PAPER = '#ebe1c9';
+const INK = '#1c140d', PAPER = '#ebe1c9', GRAPHITE = 'rgba(70,64,58,0.38)';
 // Layer ids live in the red channel of the mask canvas, spaced so antialiased
 // edge pixels snap back to a neighbouring layer.
-const SKY = 10, FAR = 35, CRAG = 60, CASTLE = 85, VALLEY = 110, WATER = 135, GROUND = 160, TREE = 190, LEAF = 220;
-const IDS = [SKY, FAR, CRAG, CASTLE, VALLEY, WATER, GROUND, TREE, LEAF];
+const SKY = 10, FAR = 35, CRAG = 60, CASTLE = 85, VALLEY = 110, WATER = 135, GROUND = 160, ROCK = 185, TREE = 210, LEAF = 235;
+const IDS = [SKY, FAR, CRAG, CASTLE, VALLEY, WATER, GROUND, ROCK, TREE, LEAF];
+// Replay time per phase, 60 s in all.
+const TIMING = { pencil: 14000, outline: 6000, hatch: 34000, detail: 6000 };
 
 function mulberry32(a) {
   return function () {
@@ -65,6 +68,15 @@ function yAt(pts, x) {
   return pts[pts.length - 1][1];
 }
 
+// Road centre and width at s (0 = bottom edge of the plate, 1 = far end).
+function roadAt(rd, s) {
+  return {
+    x: rd.x0 + (rd.x1 - rd.x0) * s + Math.sin(s * Math.PI * rd.k + rd.ph) * rd.amp * (1 - s),
+    y: H + 10 + (rd.yEnd - H - 10) * s,
+    w: 110 * Math.pow(1 - s, 1.3) + 5,
+  };
+}
+
 function makeScene(seed) {
   const R = mulberry32(seed >>> 0);
   const r = (a, b) => a + (b - a) * R();
@@ -82,7 +94,7 @@ function makeScene(seed) {
   const nFar = 1 + Math.floor(R() * 3);
   for (let i = 0; i < nFar; i++) {
     const base = waterY - H * r(0.05, 0.16) + i * H * 0.03, amp = H * r(0.03, 0.12), fq = r(0.002, 0.005), o = off();
-    far.push({ tone: 0.86 - i * 0.07, pts: line(-20, W + 20, 6, x => Math.min(waterY - 2, base - amp * (0.5 + N.fbm(x * fq, o, 5)))) });
+    far.push({ tone: 0.8 - i * 0.08, pts: line(-20, W + 20, 6, x => Math.min(waterY - 2, base - amp * (0.5 + N.fbm(x * fq, o, 5)))) });
   }
 
   const crags = [];
@@ -112,6 +124,31 @@ function makeScene(seed) {
     return Math.max(waterY + 25, gBase - bank + N.fbm(x * 0.004, go, 5) * H * 0.05);
   });
 
+  // A road winding up to the crest, sometimes walked by a pilgrim or two.
+  let road = null;
+  const rx1 = W * r(0.3, 0.7), ryEnd = yAt(ground, rx1) + 3;
+  if (chance(0.5) && H - ryEnd > 60) {
+    road = { x0: W * r(0.25, 0.75), x1: rx1, yEnd: ryEnd, amp: W * r(0.03, 0.1), k: r(1, 2.5), ph: off(), walkers: [] };
+    if (chance(0.7)) {
+      const s = r(0.4, 0.75), n = chance(0.4) ? 2 : 1;
+      for (let i = 0; i < n; i++) road.walkers.push({ s: s + i * 0.04, dx: r(-0.2, 0.2) });
+    }
+  }
+
+  const rocks = [];
+  const nRocks = Math.floor(r(2, 9));
+  for (let i = 0; i < nRocks; i++) {
+    const x = W * r(0.04, 0.96), top = yAt(ground, x);
+    if (H - top < 50) continue;
+    const y = r(top + 12, H - 15), depth = (y - waterY) / (H - waterY);
+    const size = (14 + 60 * depth) * r(0.7, 1.3), flat = r(0.5, 0.75), o = off(), pts = [];
+    for (let k = 0; k < 24; k++) {
+      const a = k / 24 * Math.PI * 2, m = 1 + 0.3 * N.n2(Math.cos(a) * 1.2 + o, Math.sin(a) * 1.2 + o);
+      pts.push([x + Math.cos(a) * size * m, y + Math.min(Math.sin(a) * size * flat * m, size * 0.25)]);
+    }
+    rocks.push({ pts, x, y, size });
+  }
+
   const trees = [];
   const roll = R(), nTrees = roll < 0.15 ? 0 : roll < 0.55 ? 1 : roll < 0.9 ? 2 : 3;
   let side = bankL > bankR ? -1 : 1;
@@ -127,7 +164,7 @@ function makeScene(seed) {
     for (let i = 0; i < n; i++) birds.push([bx + r(-120, 120), by + r(-50, 50), r(4, 9)]);
   }
 
-  return { seed, W, H, sun, waterY, hasWater, sky, far, crags, ground, trees, birds };
+  return { seed, W, H, sun, waterY, hasWater, sky, far, crags, ground, road, rocks, trees, birds };
 }
 
 // Keep, towers and curtain wall standing on the crag's highest point; ruins get broken tops.
@@ -147,7 +184,7 @@ function makeCastle(crag, r, chance, sunLeft) {
   };
   const block = (a, b, y, cyl) => {
     const mw = Math.max(3, (b - a) / 7);
-    parts.push({ pts: [...top(a, b, y, mw), ...base(a, b)], cyl, tone: cyl ? 0 : r(0.45, 0.7) });
+    parts.push({ pts: [...top(a, b, y, mw), ...base(a, b)], cyl, tone: cyl ? 0 : r(0.45, 0.7), masonry: true });
   };
   block(x0, x1, wallTop, false);
   const towers = [];
@@ -158,14 +195,20 @@ function makeCastle(crag, r, chance, sunLeft) {
     const a = t.x - t.w / 2, b = t.x + t.w / 2;
     const roof = !ruin && chance(0.55);
     if (roof) {
-      parts.push({ pts: [[a, t.top], [b, t.top], ...base(a, b)], cyl: true });
-      parts.push({ pts: [[a - t.w * 0.12, t.top], [t.x, t.top - t.w * r(0.9, 1.7)], [b + t.w * 0.12, t.top]], cyl: false, tone: 0.22 });
+      parts.push({ pts: [[a, t.top], [b, t.top], ...base(a, b)], cyl: true, masonry: true });
+      const apex = t.top - t.w * r(0.9, 1.7);
+      parts.push({ pts: [[a - t.w * 0.12, t.top], [t.x, apex], [b + t.w * 0.12, t.top]], cyl: false, tone: 0.22, flag: chance(0.5) ? [t.x, apex] : null });
     } else block(a, b, t.top, true);
+    // Arched windows and slits.
     const slits = 1 + Math.floor(r(0, 3));
     for (let s = 0; s < slits; s++) {
       const wx = t.x + r(-0.25, 0.25) * t.w, wy = r(t.top + 10, wallTop - 4);
-      const ww = ruin ? r(3, 7) : r(2.5, 4), wh = ruin ? r(8, 16) : r(7, 13);
-      if (wy + wh < wallTop) parts.push({ pts: [[wx, wy + wh], [wx, wy], [wx + ww, wy], [wx + ww, wy + wh]], cyl: false, tone: 0, window: true });
+      const ww = ruin ? r(3, 7) : r(2.5, 4.5), wh = ruin ? r(8, 16) : r(7, 14);
+      if (wy + wh >= wallTop) continue;
+      const pts = [[wx, wy + wh]];
+      for (let k = 0; k <= 6; k++) { const a = Math.PI + k / 6 * Math.PI; pts.push([wx + ww / 2 + Math.cos(a) * ww / 2, wy + ww / 2 + Math.sin(a) * ww / 2]); }
+      pts.push([wx + ww, wy + wh]);
+      parts.push({ pts, cyl: false, tone: 0, window: true });
     }
   }
   return { parts, sunLeft };
@@ -201,40 +244,106 @@ function makeTree(x, y, height, lean, leafy, R, r, N) {
   return { segs, clumps };
 }
 
-// Hatch families per layer: angle, spacing, wobble amplitude and frequency.
-function hatchGroups(sc) {
-  const sunLeft = sc.sun.x < W / 2;
-  const cragA = sunLeft ? 1.1 : Math.PI - 1.1;
-  return [
-    { id: SKY, sp: 4.2, wob: 1.4, wf: 0.004, fams: [0, -0.5, 0.35] },
-    { id: FAR, sp: 3.4, wob: 0.6, wf: 0.01, fams: [0.03, 0.6, -0.6] },
-    { id: CRAG, sp: 3.6, wob: 2.2, wf: 0.012, fams: [cragA, cragA - 1.2, 0.05] },
-    { id: CASTLE, sp: 3, wob: 0.3, wf: 0.02, fams: [Math.PI / 2, 0.35, -0.35] },
-    { id: VALLEY, sp: 3.6, wob: 0.8, wf: 0.006, fams: [0, 0.4, -0.4] },
-    { id: WATER, sp: 3.2, wob: 0.9, wf: 0.03, fams: [0, 0.06, -0.08] },
-    { id: GROUND, sp: 4.4, wob: 3, wf: 0.008, fams: [-0.22, 0.75, -1.1] },
-    { id: TREE, sp: 3.2, wob: 1, wf: 0.02, fams: [1.45, 0.5, -0.6] },
-    { id: LEAF, sp: 3.8, wob: 3.5, wf: 0.05, fams: [0.7, -0.6, 1.9] },
-  ];
-}
 // Darkness bands: family i starts at d0, reaches full width at d1.
-const BANDS = [[0.05, 0.6, 0.6], [0.45, 0.85, 0.45], [0.75, 1, 0.4]];
+const BANDS = [[0.04, 0.55, 0.6], [0.42, 0.82, 0.45], [0.72, 1, 0.4]];
 
 const tick = () => new Promise(res => setTimeout(res, 0));
+
+// Replays each phase's ops spread evenly over its time. Waits for a phase the
+// producer has not finished; token.skip draws the rest as fast as possible.
+function play(ctx, phases, token, onProgress) {
+  const total = phases.reduce((a, p) => a + p.ms, 0);
+  return new Promise(resolve => {
+    let pi = 0, idx = 0, t0 = null, before = 0;
+    function frame(now) {
+      if (token.cancelled) return resolve(false);
+      const started = performance.now();
+      while (pi < phases.length) {
+        const ph = phases[pi];
+        if (!ph.ready) break;
+        if (t0 === null) t0 = now;
+        const n = ph.ops.length;
+        const target = token.skip ? n : Math.min(n, Math.ceil(n * (now - t0) / ph.ms));
+        while (idx < target) {
+          ph.ops[idx++](ctx);
+          if (token.skip && (idx & 63) === 0 && performance.now() - started > 40) break;
+        }
+        onProgress((before + ph.ms * (n ? idx / n : 1)) / total);
+        if (idx < n) break;
+        before += ph.ms; pi++; idx = 0; t0 = now;
+      }
+      if (pi >= phases.length) return resolve(true);
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  });
+}
 
 async function render(canvas, seed, { onProgress = () => {}, token = {} } = {}) {
   const sc = makeScene(seed), N = noiseFor(seed), R2 = mulberry32((seed + 7919) >>> 0);
   const { sun, waterY, sky } = sc;
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
-  const step = async (p) => { onProgress(p); await tick(); return token.cancelled; };
+  ctx.fillStyle = PAPER; ctx.fillRect(0, 0, W, H);
+  const fox = ctx.createRadialGradient(W / 2, H / 2, H * 0.45, W / 2, H / 2, W * 0.75);
+  fox.addColorStop(0, 'rgba(120,85,40,0)'); fox.addColorStop(1, 'rgba(120,85,40,0.16)');
+  ctx.fillStyle = fox; ctx.fillRect(0, 0, W, H);
+  ctx.save(); ctx.beginPath(); ctx.rect(MARGIN, MARGIN, W - 2 * MARGIN, H - 2 * MARGIN); ctx.clip();
 
-  // 1. Mask: layer id in red, base tone in green.
+  const [pencilOps, outlineOps, hatchOps, detailOps] = ['pencil', 'outline', 'hatch', 'detail'].map(() => []);
+  const phases = [pencilOps, outlineOps, hatchOps, detailOps].map((ops, i) => ({ ops, ms: Object.values(TIMING)[i], ready: false }));
+  const player = play(ctx, phases, token, onProgress);
+
+  // Op builders. Long lines are cut into short pieces so they draw progressively.
+  let jo = 0;
+  const jitter = (pts, jit) => { jo += 13.7; return pts.map(([x, y], i) => [x + N.n2(i * 0.3, jo) * jit, y + N.n2(jo, i * 0.3) * jit]); };
+  const strokeOp = (pts, w, color) => c => {
+    c.strokeStyle = color; c.lineWidth = w; c.lineCap = 'round'; c.lineJoin = 'round';
+    c.beginPath(); pts.forEach(([x, y], i) => (i ? c.lineTo(x, y) : c.moveTo(x, y))); c.stroke();
+  };
+  const lineOps = (list, pts, w, color, jit, chunk = 8) => {
+    if (pts.length < 2) return;
+    const j = jitter(pts, jit);
+    for (let i = 0; i < j.length - 1; i += chunk) list.push(strokeOp(j.slice(i, i + chunk + 1), w, color));
+  };
+  const segsOp = (segs, w) => c => {
+    c.strokeStyle = INK; c.lineWidth = w; c.lineCap = 'round'; c.beginPath();
+    for (const s of segs) { c.moveTo(s[0], s[1]); for (let k = 2; k < s.length; k += 2) c.lineTo(s[k], s[k + 1]); }
+    c.stroke();
+  };
+  const fillOp = pts => c => { c.fillStyle = INK; c.beginPath(); pts.forEach(([x, y], i) => (i ? c.lineTo(x, y) : c.moveTo(x, y))); c.closePath(); c.fill(); };
+  const closed = pts => [...pts, pts[0]];
+  const every = (pts, n) => pts.filter((_, i) => i % n === 0 || i === pts.length - 1);
+
+  // 1. Pencil underdrawing straight from the scene geometry.
+  const pencil = (pts, chunk = 5) => lineOps(pencilOps, pts, 0.9, GRAPHITE, 1.2, chunk);
+  pencil([[MARGIN, waterY], [W / 2, waterY + 1], [W - MARGIN, waterY]], 1);
+  for (const f of sc.far) pencil(every(f.pts, 2));
+  for (const c of sc.crags) {
+    pencil(every(c.pts, 2));
+    if (c.castle) for (const p of c.castle.parts) if (!p.window) pencil(closed(p.pts), 3);
+  }
+  pencil(every(sc.ground, 2));
+  if (sc.road) for (const side of [-0.5, 0.5]) {
+    const pts = [];
+    for (let s = 0; s <= 1.0001; s += 0.04) { const q = roadAt(sc.road, s); pts.push([q.x + side * q.w, q.y]); }
+    pencil(pts, 3);
+  }
+  for (const rk of sc.rocks) pencil(closed(every(rk.pts, 2)), 3);
+  for (const t of sc.trees) {
+    for (const s of t.segs) if (s[4] > 2) pencil([[s[0], s[1]], [s[2], s[3]]], 1);
+    for (const c of t.clumps) pencil(closed(every(c, 4)), 4);
+  }
+  phases[0].ready = true;
+  await tick();
+  if (token.cancelled) return player;
+
+  // 2. Mask: layer id in red, base tone in green.
   const mask = document.createElement('canvas');
   mask.width = W; mask.height = H;
   const m = mask.getContext('2d', { willReadFrequently: true });
   const col = (id, g) => `rgb(${id},${Math.round(clamp(g) * 255)},0)`;
-  const poly = (pts, close = true) => { m.beginPath(); pts.forEach(([x, y], i) => (i ? m.lineTo(x, y) : m.moveTo(x, y))); if (close) m.closePath(); m.fill(); };
+  const poly = pts => { m.beginPath(); pts.forEach(([x, y], i) => (i ? m.lineTo(x, y) : m.moveTo(x, y))); m.closePath(); m.fill(); };
   const sideGrad = (id, xa, xb, litLeft, lit, shade) => {
     const g = m.createLinearGradient(xa, 0, xb, 0);
     g.addColorStop(0, col(id, litLeft ? lit : shade)); g.addColorStop(1, col(id, litLeft ? shade : lit));
@@ -243,8 +352,7 @@ async function render(canvas, seed, { onProgress = () => {}, token = {} } = {}) 
   m.fillStyle = col(SKY, 0); m.fillRect(0, 0, W, H);
   for (const f of sc.far) { m.fillStyle = col(FAR, f.tone); poly([...f.pts, [W + 20, waterY + 6], [-20, waterY + 6]]); }
   for (const c of sc.crags) {
-    const litLeft = sun.x < c.cx;
-    m.fillStyle = sideGrad(CRAG, c.cx - c.wl * 0.25, c.cx + c.wr * 0.25, litLeft, c.lit, c.shade);
+    m.fillStyle = sideGrad(CRAG, c.cx - c.wl * 0.25, c.cx + c.wr * 0.25, sun.x < c.cx, c.lit, c.shade);
     poly([...c.pts, [c.pts[c.pts.length - 1][0], waterY + 6], [c.pts[0][0], waterY + 6]]);
     if (!c.castle) continue;
     for (const p of c.castle.parts) {
@@ -254,22 +362,55 @@ async function render(canvas, seed, { onProgress = () => {}, token = {} } = {}) 
     }
   }
   m.fillStyle = col(sc.hasWater ? WATER : VALLEY, 0.5); m.fillRect(0, waterY, W, H - waterY);
-  m.fillStyle = col(GROUND, 0.42); poly([...sc.ground, [W + 20, H + 20], [-20, H + 20]]);
+  m.fillStyle = col(GROUND, 0.34); poly([...sc.ground, [W + 20, H + 20], [-20, H + 20]]);
+  for (const rk of sc.rocks) {
+    const g = m.createLinearGradient(0, rk.y - rk.size * 0.7, 0, rk.y + rk.size * 0.3);
+    g.addColorStop(0, col(ROCK, 0.85)); g.addColorStop(1, col(ROCK, 0.12));
+    m.fillStyle = g; poly(rk.pts);
+  }
   for (const t of sc.trees) {
-    m.fillStyle = col(TREE, 0.3);
+    m.fillStyle = col(TREE, 0.28);
     for (const s of t.segs) if (s[4] >= 4) { quad(m, s); m.fill(); m.beginPath(); m.arc(s[2], s[3], s[5] / 2, 0, 7); m.fill(); }
     m.fillStyle = col(LEAF, 0.2);
     for (const c of t.clumps) poly(c);
   }
-  if (await step(0.05)) return false;
-
-  // 2. Tone map: 0 = solid ink, 1 = bare paper.
   const img = m.getImageData(0, 0, W, H).data;
   const lut = new Uint8Array(256);
   for (let v = 0; v < 256; v++) lut[v] = IDS.reduce((a, b) => (Math.abs(b - v) < Math.abs(a - v) ? b : a));
-  const ids = new Uint8Array(W * H), tone = new Float32Array(W * H);
-  const box = {};
+  const ids = new Uint8Array(W * H), tone = new Float32Array(W * H), box = {};
   IDS.forEach(id => (box[id] = [W, H, 0, 0]));
+  for (let i = 0, n = W * H; i < n; i++) ids[i] = lut[img[i * 4]];
+  const idAt = (x, y) => ids[clamp(y | 0, 0, H - 1) * W + clamp(x | 0, 0, W - 1)];
+
+  // 3. Ink outlines of the main forms, split wherever a nearer layer covers them.
+  const inkWhere = (list, pts, w, jit, ok) => {
+    let run = [];
+    for (const p of pts) {
+      if (ok(idAt(p[0], p[1]))) run.push(p); else { lineOps(list, run, w, INK, jit); run = []; }
+    }
+    lineOps(list, run, w, INK, jit);
+  };
+  for (const f of sc.far) inkWhere(outlineOps, f.pts.filter(p => p[1] < waterY - 1), 0.7, 0.4, id => id === FAR || id === SKY);
+  for (const c of sc.crags) {
+    inkWhere(outlineOps, c.pts.filter(p => p[1] < waterY), 1.7, 0.6, id => id === CRAG || id === SKY || id === FAR);
+    if (c.castle) for (const p of c.castle.parts) {
+      if (!p.window) inkWhere(outlineOps, p.pts.filter(q => q[1] <= yAt(c.pts, q[0]) + 2), 1.1, 0.25, id => id === CASTLE || id === SKY || id === CRAG);
+    }
+  }
+  inkWhere(outlineOps, sc.ground, 1.8, 0.6, id => id !== TREE && id !== LEAF);
+  for (const rk of sc.rocks) inkWhere(outlineOps, closed(rk.pts), 1.4, 0.5, id => id !== TREE && id !== LEAF);
+  for (const t of sc.trees) {
+    for (const s of t.segs) {
+      if (s[4] < 4) { lineOps(outlineOps, [[s[0], s[1]], [s[2], s[3]]], Math.max(0.7, s[4]), INK, 0.2); continue; }
+      const dx = s[2] - s[0], dy = s[3] - s[1], l = Math.hypot(dx, dy) || 1, px = -dy / l, py = dx / l;
+      for (const sg of [1, -1]) lineOps(outlineOps, [[s[0] + px * sg * s[4] / 2, s[1] + py * sg * s[4] / 2], [s[2] + px * sg * s[5] / 2, s[3] + py * sg * s[5] / 2]], 1.3, INK, 0.3);
+    }
+  }
+  phases[1].ready = true;
+  await tick();
+  if (token.cancelled) return player;
+
+  // 4. Tone map: 0 = solid ink, 1 = bare paper.
   const rays = (x, y) => {
     if (!sky.rays) return 0;
     const dx = x - sun.x, dy = y - sun.y, d = Math.hypot(dx, dy), a = Math.atan2(dy, dx), F = sky.rayFreq;
@@ -278,11 +419,13 @@ async function render(canvas, seed, { onProgress = () => {}, token = {} } = {}) 
   };
   const crest = new Float32Array(W);
   for (let x = 0; x < W; x++) crest[x] = yAt(sc.ground, x);
+  const roadX = new Float32Array(H).fill(-1e4), roadW = new Float32Array(H);
+  if (sc.road) for (let s = 0; s <= 1; s += 0.0005) { const q = roadAt(sc.road, s), y = q.y | 0; if (y >= 0 && y < H) { roadX[y] = q.x; roadW[y] = q.w; } }
   const cloud = (x, y) => N.fbm(x * 0.0022 + sky.cloudOff, y * 0.0022 * sky.stretch, 5) + sky.cloud + 0.25 * (1 - y / waterY);
+  const mist = y => smooth(waterY - H * 0.12, waterY, y);
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
-      const i = y * W + x, id = lut[img[i * 4]], g = img[i * 4 + 1] / 255;
-      ids[i] = id;
+      const i = y * W + x, id = ids[i], g = img[i * 4 + 1] / 255;
       const bx = box[id];
       if (x < bx[0]) bx[0] = x; if (y < bx[1]) bx[1] = y; if (x > bx[2]) bx[2] = x; if (y > bx[3]) bx[3] = y;
       let t;
@@ -299,23 +442,31 @@ async function render(canvas, seed, { onProgress = () => {}, token = {} } = {}) 
           t += rays(x, y);
           break;
         }
-        case FAR: t = g + 0.07 * N.fbm(x * 0.01, y * 0.02, 3) + glow * 0.15 + rays(x, y) * 0.6; break;
+        case FAR: t = g + 0.07 * N.fbm(x * 0.01, y * 0.02, 3) + glow * 0.15 + rays(x, y) * 0.6 + 0.15 * mist(y); break;
         case CRAG: {
           const n = N.fbm(x * 0.008, y * 0.02, 4);
           const relief = n - N.fbm((x + Math.sign(sun.x - x) * 4) * 0.008, (y - 3) * 0.02, 4);
-          t = g + relief * 5 + N.n2(x * 0.05, y * 0.004) * 0.12 + 0.25 * smooth(waterY - H * 0.14, waterY, y) + rays(x, y) * 0.35;
+          // Bedding planes: tilted dark bands that read as layered rock.
+          const strata = smooth(0.2, 0.45, N.n2(x * 0.01, y * 0.05 + N.n2(x * 0.004, y * 0.004) * 3));
+          t = g + relief * 4 + N.n2(x * 0.05, y * 0.004) * 0.12 - strata * 0.28 + 0.35 * mist(y) + rays(x, y) * 0.35;
           break;
         }
-        case CASTLE: t = g + 0.05 * N.n2(x * 0.2, y * 0.2); break;
+        case CASTLE: t = g + 0.05 * N.n2(x * 0.2, y * 0.2) + 0.15 * mist(y); break;
         case VALLEY: t = 0.8 - 0.3 * (y - waterY) / (H - waterY) + 0.1 * N.fbm(x * 0.005, y * 0.02, 3); break;
         case WATER: t = 0; break;
-        case GROUND: t = g + 0.35 * N.fbm(x * 0.006, y * 0.014, 4) + 0.3 * (1 - smooth(0, 40, y - crest[x])) - 0.3 * smooth(H * 0.72, H, y); break;
+        case GROUND: {
+          t = g + 0.35 * N.fbm(x * 0.006, y * 0.014, 4) + 0.3 * (1 - smooth(0, 40, y - crest[x])) - 0.35 * smooth(H * 0.72, H, y);
+          const dx = Math.abs(x - roadX[y]), w = roadW[y];
+          if (dx < w / 2) t = 0.78 + 0.12 * N.n2(x * 0.05, y * 0.05) - 0.45 * smooth(w * 0.3, w * 0.5, dx);
+          break;
+        }
+        case ROCK: t = g + 1.2 * (N.fbm(x * 0.03, y * 0.03, 3) - N.fbm((x + Math.sign(sun.x - x) * 3) * 0.03, (y - 3) * 0.03, 3)); break;
         case TREE: t = g + 0.15 * N.n2(x * 0.1, y * 0.02); break;
         default: t = g + 0.4 * smooth(0.05, 0.35, N.fbm(x * 0.03, y * 0.03, 3)) * (0.5 + glow);
       }
       tone[i] = clamp(t);
     }
-    if (y % 100 === 99 && await step(0.05 + 0.25 * y / H)) return false;
+    if (y % 60 === 59) { await tick(); if (token.cancelled) return player; }
   }
   // Water mirrors everything above the shore line, broken by ripples and glints.
   if (sc.hasWater) {
@@ -333,133 +484,186 @@ async function render(canvas, seed, { onProgress = () => {}, token = {} } = {}) 
       }
     }
   }
-  if (await step(0.32)) return false;
+  await tick();
+  if (token.cancelled) return player;
 
-  // 3. Paper, then hatching: line width swells with darkness.
-  ctx.fillStyle = PAPER; ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = INK;
-  const groups = hatchGroups(sc);
-  let done = 0;
+  // 5. Hatching. Lines are bent by a per-layer displacement field so they wrap
+  // around clouds, rock and ground, and swell with darkness, tapering at the ends.
+  const cragA = sun.x < W / 2 ? 1.1 : Math.PI - 1.1;
+  const groups = [
+    { id: SKY, sp: 3.4, wob: 0.8, wf: 0.004, wk: 1, fams: [0, -0.5, 0.35], disp: (x, y) => cloud(x, y) * 26 },
+    { id: FAR, sp: 2.6, wob: 0.4, wf: 0.01, wk: 0.7, fams: [0.03, 0.6, -0.6], disp: (x, y) => N.n2(x * 0.004, y * 0.01) * 6 },
+    { id: CRAG, sp: 2.9, wob: 1.2, wf: 0.012, wk: 1, fams: [cragA, cragA - 1.1, 0.1], disp: (x, y) => N.fbm(x * 0.005, y * 0.01, 3) * 50 },
+    { id: CASTLE, sp: 2.3, wob: 0.2, wf: 0.02, wk: 0.9, fams: [Math.PI / 2, 0.35, -0.35], disp: null },
+    { id: VALLEY, sp: 3, wob: 0.6, wf: 0.006, wk: 0.9, fams: [0, 0.4, -0.4], disp: (x, y) => N.fbm(x * 0.003, y * 0.02, 2) * 10 },
+    { id: WATER, sp: 2.7, wob: 0.8, wf: 0.03, wk: 1, fams: [0, 0.05, -0.07], disp: (x, y) => N.n2(x * 0.02, y * 0.15) * 2 },
+    { id: GROUND, sp: 3.4, wob: 1.5, wf: 0.008, wk: 1, fams: [-0.22, 0.75, -1.1], disp: (x, y) => N.fbm(x * 0.003, y * 0.008, 3) * 45 },
+    { id: ROCK, sp: 2.6, wob: 0.8, wf: 0.02, wk: 1, fams: [cragA, cragA - 1.1, 0.1], disp: (x, y) => N.fbm(x * 0.02, y * 0.02, 2) * 14 },
+    { id: TREE, sp: 2.6, wob: 0.8, wf: 0.02, wk: 1, fams: [1.45, 0.5, -0.6], disp: (x, y) => N.n2(x * 0.05, y * 0.01) * 4 },
+    { id: LEAF, sp: 3, wob: 2.5, wf: 0.05, wk: 1, fams: [0.7, -0.6, 1.9], disp: (x, y) => N.fbm(x * 0.02, y * 0.02, 2) * 16 },
+  ];
+  const runOp = poly => c => {
+    c.fillStyle = INK; c.beginPath(); c.moveTo(poly[0], poly[1]);
+    for (let k = 2; k < poly.length; k += 2) c.lineTo(poly[k], poly[k + 1]);
+    c.closePath(); c.fill();
+  };
+  const flush = run => {
+    const n = run.length / 3;
+    if (n < 2) { run.length = 0; return; }
+    const poly = new Float32Array(n * 4);
+    for (let k = 0; k < n; k++) {
+      const a = Math.max(0, k - 1) * 3, b = Math.min(n - 1, k + 1) * 3;
+      const dx = run[b] - run[a], dy = run[b + 1] - run[a + 1], l = Math.hypot(dx, dy) || 1;
+      const taper = Math.min(1, (k + 1) / 4, (n - k) / 4);
+      const hw = run[k * 3 + 2] * taper / 2, nx = -dy / l * hw, ny = dx / l * hw;
+      poly[k * 2] = run[k * 3] + nx; poly[k * 2 + 1] = run[k * 3 + 1] + ny;
+      poly[(2 * n - 1 - k) * 2] = run[k * 3] - nx; poly[(2 * n - 1 - k) * 2 + 1] = run[k * 3 + 1] - ny;
+    }
+    hatchOps.push(runOp(poly));
+    run.length = 0;
+  };
   for (const gr of groups) {
     const bx = box[gr.id];
-    if (bx[2] < bx[0]) { done++; continue; }
-    const cx = (bx[0] + bx[2]) / 2, cy = (bx[1] + bx[3]) / 2, hd = Math.hypot(bx[2] - bx[0], bx[3] - bx[1]) / 2 + 4;
+    if (bx[2] < bx[0]) continue;
+    const cx = (bx[0] + bx[2]) / 2, cy = (bx[1] + bx[3]) / 2, hd = Math.hypot(bx[2] - bx[0], bx[3] - bx[1]) / 2 + 30;
     for (let f = 0; f < 3; f++) {
       const a = gr.fams[f], [d0, d1, wmax] = BANDS[f];
       const ca = Math.cos(a), sa = Math.sin(a), nx = -sa, ny = ca, fo = f * 97 + gr.id;
-      const path = new Path2D();
-      const flush = run => {
-        if (run.length < 6) { run.length = 0; return; }
-        path.moveTo(run[0] + nx * run[2] / 2, run[1] + ny * run[2] / 2);
-        for (let k = 3; k < run.length; k += 3) path.lineTo(run[k] + nx * run[k + 2] / 2, run[k + 1] + ny * run[k + 2] / 2);
-        for (let k = run.length - 3; k >= 0; k -= 3) path.lineTo(run[k] - nx * run[k + 2] / 2, run[k + 1] - ny * run[k + 2] / 2);
-        path.closePath();
-        run.length = 0;
-      };
       for (let o = -hd; o <= hd; o += gr.sp * (0.85 + 0.3 * R2())) {
         const run = [];
         for (let t = -hd; t <= hd; t += 1.6) {
-          const wob = gr.wob * N.n2(t * gr.wf + fo, o * 0.05);
-          const px = cx + nx * (o + wob) + ca * t, py = cy + ny * (o + wob) + sa * t;
+          const qx = cx + nx * o + ca * t, qy = cy + ny * o + sa * t;
+          const dd = (gr.disp ? gr.disp(qx, qy) : 0) + gr.wob * N.n2(t * gr.wf + fo, o * 0.05);
+          const px = qx + nx * dd, py = qy + ny * dd;
           const ix = px | 0, iy = py | 0;
           let w = 0;
           if (ix >= 0 && iy >= 0 && ix < W && iy < H && ids[iy * W + ix] === gr.id) {
             const d = 1 - tone[iy * W + ix];
-            w = gr.sp * wmax * Math.pow(clamp((d - d0) / (d1 - d0)), 0.9);
+            w = gr.sp * gr.wk * wmax * Math.pow(clamp((d - d0) / (d1 - d0)), 0.9);
           }
-          if (w >= 0.3) run.push(px, py, w); else flush(run);
+          if (w >= 0.25) run.push(px, py, w); else flush(run);
         }
         flush(run);
       }
-      ctx.fill(path);
+      await tick();
+      if (token.cancelled) return player;
     }
-    if (await step(0.32 + 0.55 * ++done / groups.length)) return false;
   }
+  phases[2].ready = true;
 
-  // 4. Ink outlines and details drawn freehand on top.
-  ctx.strokeStyle = INK; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  let jo = 0;
-  const ink = (pts, w, jit = 0.6) => {
-    ctx.lineWidth = w; ctx.beginPath(); jo += 13.7;
-    pts.forEach(([x, y], i) => {
-      const jx = x + N.n2(i * 0.3, jo) * jit, jy = y + N.n2(jo, i * 0.3) * jit;
-      i ? ctx.lineTo(jx, jy) : ctx.moveTo(jx, jy);
-    });
-    ctx.stroke();
-  };
-  const inkWhere = (pts, w, jit, ok) => {
-    let run = [];
-    for (const p of pts) {
-      const ix = clamp(p[0] | 0, 0, W - 1), iy = clamp(p[1] | 0, 0, H - 1);
-      if (ok(ids[iy * W + ix])) run.push(p); else { if (run.length > 1) ink(run, w, jit); run = []; }
-    }
-    if (run.length > 1) ink(run, w, jit);
-  };
-  for (const f of sc.far) inkWhere(f.pts.filter(p => p[1] < waterY - 1), 0.8, 0.4, id => id === FAR || id === SKY);
+  // 6. Details: fissures, masonry, leaves, grass, figures, birds, plate rule.
   for (const c of sc.crags) {
-    inkWhere(c.pts.filter(p => p[1] < waterY), 1.7, 0.6, id => id === CRAG || id === SKY || id === FAR);
-    // Fissures run down from the skyline while they stay on rock.
-    const n = 10 + Math.floor(R2() * 16);
+    const n = 20 + Math.floor(R2() * 26);
     for (let k = 0; k < n; k++) {
       const [sx, sy] = c.pts[Math.floor(R2() * c.pts.length)];
       let x = sx, y = sy + 3, a = Math.PI / 2 + (R2() - 0.5) * 1.2;
-      const pts = [[x, y]], len = H * (0.04 + R2() * 0.16);
+      const pts = [[x, y]], len = H * (0.04 + R2() * 0.2);
       for (let s = 0; s < len; s += 4) {
         a += (R2() - 0.5) * 0.5; x += Math.cos(a) * 4; y += Math.sin(a) * 4;
-        const ix = x | 0, iy = y | 0;
-        if (ix < 0 || iy < 0 || ix >= W || iy >= H || ids[iy * W + ix] !== CRAG) break;
+        if (idAt(x, y) !== CRAG) break;
         pts.push([x, y]);
       }
-      if (pts.length > 2) ink(pts, 0.6 + R2() * 0.9, 0.3);
+      lineOps(detailOps, pts, 0.5 + R2() * 1.0, INK, 0.3, 6);
     }
-    if (c.castle) for (const p of c.castle.parts) {
-      if (p.window) { ctx.beginPath(); p.pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.fill(); }
-      else inkWhere(p.pts.filter(q => q[1] <= yAt(c.pts, q[0]) + 2), 1.1, 0.25, id => id === CASTLE || id === SKY || id === CRAG);
-    }
-  }
-  // Shore strokes along the far waterline.
-  for (let x = MARGIN; x < W - MARGIN; x += 6 + R2() * 30) {
-    const len = 10 + R2() * 60;
-    ink([[x, waterY + 1 + R2() * 3], [x + len, waterY + 1 + R2() * 3]], 0.5 + R2() * 0.8, 0.3);
-  }
-  ink(sc.ground, 1.8);
-  // Grass tufts on the near ground's crest.
-  for (let x = 0; x < W; x += 2 + R2() * 5) {
-    const y = yAt(sc.ground, x) + 2, h = 3 + R2() * 11, a = -Math.PI / 2 + (R2() - 0.5) * 0.9;
-    ink([[x, y], [x + Math.cos(a) * h * 0.5 + (R2() - 0.5) * 2, y + Math.sin(a) * h * 0.5], [x + Math.cos(a) * h, y + Math.sin(a) * h]], 0.5 + R2() * 0.6, 0.2);
-  }
-  for (const t of sc.trees) {
-    for (const s of t.segs) {
-      if (s[4] < 4) { ink([[s[0], s[1]], [s[2], s[3]]], Math.max(0.7, s[4]), 0.2); continue; }
-      const dx = s[2] - s[0], dy = s[3] - s[1], l = Math.hypot(dx, dy) || 1, px = -dy / l, py = dx / l;
-      for (const sg of [1, -1]) ink([[s[0] + px * sg * s[4] / 2, s[1] + py * sg * s[4] / 2], [s[2] + px * sg * s[5] / 2, s[3] + py * sg * s[5] / 2]], 1.3, 0.3);
-    }
-    // Leaf flicks only on the foliage's outer edge.
-    for (const c of t.clumps) {
-      const cx = c.reduce((a, p) => a + p[0], 0) / c.length, cy = c.reduce((a, p) => a + p[1], 0) / c.length;
-      for (const [x, y] of c) {
-        const ox = x + (x - cx) * 0.08, oy = y + (y - cy) * 0.08, ix = ox | 0, iy = oy | 0;
-        if (ix >= 0 && iy >= 0 && ix < W && iy < H && ids[iy * W + ix] === LEAF) continue;
-        const a = Math.atan2(y - cy, x - cx), rr = 3 + R2() * 4;
-        ctx.lineWidth = 0.9; ctx.beginPath(); ctx.arc(x, y, rr, a - 1.3, a + 1.3); ctx.stroke();
+    if (!c.castle) continue;
+    for (const p of c.castle.parts) {
+      if (p.window) { detailOps.push(fillOp(p.pts)); continue; }
+      if (p.flag) {
+        const [fx, fy] = p.flag, dir = sun.x < fx ? 1 : -1;
+        detailOps.push(segsOp([[fx, fy, fx, fy - 14]], 0.9), fillOp([[fx, fy - 14], [fx + dir * 11, fy - 11 + R2() * 2], [fx, fy - 8]]));
       }
+      if (!p.masonry) continue;
+      // Stone courses show only on the lit face.
+      const xs = p.pts.map(q => q[0]), ys = p.pts.map(q => q[1]);
+      const a = Math.min(...xs), b = Math.max(...xs), segs = [];
+      for (let y = Math.min(...ys) + 4; y < Math.max(...ys); y += 5 + R2()) {
+        for (let x = a + R2() * 6; x < b; x += 6 + R2() * 10) {
+          const e = Math.min(b, x + 4 + R2() * 8), mx = (x + e) / 2;
+          if (R2() < 0.7 && idAt(mx, y) === CASTLE && tone[(y | 0) * W + (mx | 0)] > 0.45) segs.push([x, y, e, y + R2() - 0.5]);
+        }
+      }
+      if (segs.length) detailOps.push(segsOp(segs, 0.45));
     }
+  }
+  for (const rk of sc.rocks) {
+    const [sx, sy] = rk.pts[Math.floor(R2() * 12)];
+    lineOps(detailOps, [[sx, sy], [sx + (rk.x - sx) * 0.4, sy + rk.size * 0.3], [sx + (rk.x - sx) * 0.6, sy + rk.size * 0.5]], 0.8, INK, 0.3);
+  }
+  // Leaves: small open loops on lit foliage, scallops along the outer edge.
+  for (const t of sc.trees) {
+    for (const cl of t.clumps) {
+      const xs = cl.map(p => p[0]), ys = cl.map(p => p[1]);
+      const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+      let batch = [];
+      for (let y = y0; y < y1; y += 6) for (let x = x0; x < x1; x += 6) {
+        const lx = x + R2() * 5, ly = y + R2() * 5;
+        if (lx < 0 || ly < 0 || lx >= W || ly >= H || idAt(lx, ly) !== LEAF || tone[(ly | 0) * W + (lx | 0)] < 0.3) continue;
+        batch.push([lx, ly, 1.8 + R2() * 1.6, Math.atan2(ly - sun.y, lx - sun.x)]);
+        if (batch.length === 25) { detailOps.push(leafOp(batch)); batch = []; }
+      }
+      if (batch.length) detailOps.push(leafOp(batch));
+      const cx = xs.reduce((a, v) => a + v, 0) / xs.length, cy = ys.reduce((a, v) => a + v, 0) / ys.length, edge = [];
+      for (const [x, y] of cl) {
+        if (idAt(x + (x - cx) * 0.08, y + (y - cy) * 0.08) === LEAF) continue;
+        edge.push([x, y, 3 + R2() * 4, Math.atan2(y - cy, x - cx)]);
+      }
+      if (edge.length) detailOps.push(leafOp(edge, 0.9));
+    }
+  }
+  // Grass: tufts of curved blades along the crest.
+  for (let x = 0; x < W; x += 3 + R2() * 6) {
+    const y = yAt(sc.ground, x) + 2;
+    if (idAt(x, y + 3) !== GROUND) continue;
+    const blades = [];
+    for (let b = 0, nb = 2 + Math.floor(R2() * 3); b < nb; b++) {
+      const h = 4 + R2() * 13, a = -Math.PI / 2 + (R2() - 0.5) * 1.1, bx = x + (R2() - 0.5) * 4;
+      blades.push([bx, y, bx + Math.cos(a) * h * 0.5, y + Math.sin(a) * h * 0.5, bx + Math.cos(a + 0.3) * h, y + Math.sin(a + 0.3) * h]);
+    }
+    detailOps.push(segsOp(blades, 0.6));
+  }
+  // Pilgrims on the road: cloak, head, staff and a short cast shadow.
+  if (sc.road) for (const wk of sc.road.walkers) {
+    const q = roadAt(sc.road, wk.s), fx = q.x + wk.dx * q.w, fy = q.y, h = 46 * (1 - wk.s) + 10, sd = sun.x < fx ? 1 : -1;
+    detailOps.push(c => {
+      c.fillStyle = INK; c.beginPath();
+      c.moveTo(fx - h * 0.11, fy - h * 0.78);
+      c.quadraticCurveTo(fx - h * 0.2, fy - h * 0.3, fx - h * 0.19, fy);
+      c.lineTo(fx + h * 0.17, fy);
+      c.quadraticCurveTo(fx + h * 0.16, fy - h * 0.4, fx + h * 0.1, fy - h * 0.78);
+      c.closePath(); c.fill();
+      c.beginPath(); c.arc(fx, fy - h * 0.88, h * 0.09, 0, 7); c.fill();
+      c.strokeStyle = INK; c.lineWidth = Math.max(0.8, h * 0.025);
+      c.beginPath(); c.moveTo(fx + h * 0.26, fy + 1); c.lineTo(fx + h * 0.21, fy - h * 1.05); c.stroke();
+      c.lineWidth = 0.7; c.beginPath();
+      for (let k = 0; k < 4; k++) { c.moveTo(fx + sd * h * 0.05, fy + k * 1.6); c.lineTo(fx + sd * h * (0.55 - k * 0.08), fy + k * 1.6); }
+      c.stroke();
+    });
   }
   for (const [x, y, s] of sc.birds) {
-    ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(x - s, y);
-    ctx.quadraticCurveTo(x - s / 2, y - s / 2, x, y); ctx.quadraticCurveTo(x + s / 2, y - s / 2, x + s, y); ctx.stroke();
+    detailOps.push(c => {
+      c.strokeStyle = INK; c.lineWidth = 1.2; c.beginPath(); c.moveTo(x - s, y);
+      c.quadraticCurveTo(x - s / 2, y - s / 2, x, y); c.quadraticCurveTo(x + s / 2, y - s / 2, x + s, y); c.stroke();
+    });
   }
+  detailOps.push(c => {
+    c.restore();
+    c.strokeStyle = INK;
+    c.lineWidth = 1.6; c.strokeRect(MARGIN, MARGIN, W - 2 * MARGIN, H - 2 * MARGIN);
+    c.lineWidth = 0.7; c.strokeRect(MARGIN - 8, MARGIN - 8, W - 2 * MARGIN + 16, H - 2 * MARGIN + 16);
+    c.fillStyle = INK; c.font = 'italic 17px "IM Fell English", Georgia, serif'; c.textAlign = 'right';
+    c.fillText(`Pl. ${seed}`, W - MARGIN, H - 12);
+  });
+  phases[3].ready = true;
+  return player;
+}
 
-  // 5. Plate margin and double rule.
-  ctx.fillStyle = PAPER;
-  ctx.fillRect(0, 0, W, MARGIN); ctx.fillRect(0, H - MARGIN, W, MARGIN); ctx.fillRect(0, 0, MARGIN, H); ctx.fillRect(W - MARGIN, 0, MARGIN, H);
-  ctx.lineWidth = 1.6; ctx.strokeRect(MARGIN, MARGIN, W - 2 * MARGIN, H - 2 * MARGIN);
-  ctx.lineWidth = 0.7; ctx.strokeRect(MARGIN - 8, MARGIN - 8, W - 2 * MARGIN + 16, H - 2 * MARGIN + 16);
-  const fox = ctx.createRadialGradient(W / 2, H / 2, H * 0.45, W / 2, H / 2, W * 0.75);
-  fox.addColorStop(0, 'rgba(120,85,40,0)'); fox.addColorStop(1, 'rgba(120,85,40,0.16)');
-  ctx.fillStyle = fox; ctx.fillRect(0, 0, W, H);
-  onProgress(1);
-  return true;
+// Leaf marks: open loops facing away from the light.
+function leafOp(marks, w = 0.7) {
+  return c => {
+    c.strokeStyle = INK; c.lineWidth = w; c.beginPath();
+    for (const [x, y, rr, a] of marks) { c.moveTo(x + Math.cos(a - 1.3) * rr, y + Math.sin(a - 1.3) * rr); c.arc(x, y, rr, a - 1.3, a + 1.3); }
+    c.stroke();
+  };
 }
 
 function quad(m, [x1, y1, x2, y2, wa, wb]) {
