@@ -196,6 +196,7 @@ function makeScene(seed) {
   };
 
   const wy = sc.waterY;
+  sc.focus = { x: W / 2, y: H * 0.45 };
   switch (kind) {
     case 'lake': {
       sc.hasWater = chance(0.75);
@@ -263,6 +264,7 @@ function makeScene(seed) {
       for (let y = fy; y <= sc.waterY + 4; y += 8) fall.push([fx - fw / 2 - (y - fy) * 0.08 + N.n2(y * 0.02, fo) * 6, y]);
       for (let y = sc.waterY + 4; y >= fy; y -= 8) fall.push([fx + fw / 2 + (y - fy) * 0.08 + N.n2(y * 0.02, fo + 9) * 6, y]);
       sc.fall = { pts: fall, x: fx, y0: fy };
+      sc.focus = { x: fx, y: (yb + sc.waterY) / 2 };
       addGround(H + 40, 0, 0, H + 40);
       for (let i = 0, n = Math.floor(r(1, 5)); i < n; i++) addRock(W * r(0.15, 0.85), r(sc.waterY + 30, H - 10), r(25, 70));
       addBirds(0.5);
@@ -283,6 +285,7 @@ function makeScene(seed) {
       for (const s of [-1, 1]) holes.push(lancet(cx + s * fw * 0.3, base - fh * 0.2, fw * 0.1, fh * 0.42));
       if (chance(0.6)) { const rr = fw * 0.08, ry = base - fh - gh * 0.25, rose = []; for (let k = 0; k < 20; k++) rose.push([cx + Math.cos(k / 20 * 6.283) * rr, ry + Math.sin(k / 20 * 6.283) * rr]); holes.push(rose); }
       sc.structures.push({ pts: facade, holes, tone: 0.6, masonry: true, z: 'mid' });
+      sc.focus = { x: cx, y: base - fh * 0.5 };
       // Nave wall running off to one side, lower and more broken.
       const s = chance(0.5) ? -1 : 1, wl = fw * r(0.7, 1.1), wh = fh * r(0.35, 0.55), x0 = s < 0 ? left - wl : right, x1 = x0 + wl;
       const wall = [[x0, base + 30], ...brokenTop(x0, x1, base - wh, wh * 0.4), [x1, base + 30]];
@@ -337,6 +340,10 @@ function makeScene(seed) {
       break;
     }
   }
+  // Light pools where the story is: the castle, the ruin, the fall, the shafts of sun.
+  const held = sc.crags.find(c => c.castle);
+  if (held) { const top = held.pts.reduce((a, b) => (b[1] < a[1] ? b : a)); sc.focus = { x: top[0], y: top[1] }; }
+  if (kind === 'forest') sc.focus = { x: sun.x, y: H * 0.55 };
   return sc;
 }
 
@@ -361,19 +368,22 @@ function makeCastle(crag, r, chance, sunLeft) {
   };
   block(x0, x1, wallTop, false);
   const towers = [];
-  const n = 2 + Math.floor(r(0, 4));
+  const side = chance(0.5) ? -1 : 1, wing = cw * r(0.3, 0.6), wx0 = side < 0 ? x0 - wing : x1, wx1 = side < 0 ? x0 : x1 + wing;
+  block(wx0, wx1, wallTop + H * r(0.02, 0.05), false);
+  towers.push({ x: side < 0 ? wx0 : wx1, w: cw * r(0.1, 0.14), top: wallTop - H * r(0, 0.02) });
+  const n = 3 + Math.floor(r(0, 5));
   for (let i = 0; i < n; i++) towers.push({ x: px + r(-0.5, 0.5) * cw, w: cw * r(0.1, 0.2), top: wallTop - H * r(0.02, 0.09) });
   towers.push({ x: px + r(-0.15, 0.15) * cw, w: cw * r(0.2, 0.3), top: wallTop - H * r(0.07, 0.14) });
   for (const t of towers) {
     const a = t.x - t.w / 2, b = t.x + t.w / 2;
-    const roof = !ruin && chance(0.55);
+    const roof = !ruin && chance(0.7);
     if (roof) {
       parts.push({ pts: [[a, t.top], [b, t.top], ...base(a, b)], cyl: true, masonry: true });
       const apex = t.top - t.w * r(0.9, 1.7);
       parts.push({ pts: [[a - t.w * 0.12, t.top], [t.x, apex], [b + t.w * 0.12, t.top]], cyl: false, tone: 0.22, flag: chance(0.5) ? [t.x, apex] : null });
     } else block(a, b, t.top, true);
     // Arched windows and slits.
-    const slits = 1 + Math.floor(r(0, 3));
+    const slits = 2 + Math.floor(r(0, 4));
     for (let s = 0; s < slits; s++) {
       const wx = t.x + r(-0.25, 0.25) * t.w, wy = r(t.top + 10, wallTop - 4);
       const ww = ruin ? r(3, 7) : r(2.5, 4.5), wh = ruin ? r(8, 16) : r(7, 14);
@@ -707,8 +717,19 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   const roadX = new Float32Array(H).fill(-1e4), roadW = new Float32Array(H);
   if (sc.road) for (let s = 0; s <= 1; s += 0.0005) { const q = roadAt(sc.road, s), y = q.y | 0; if (y >= 0 && y < H) { roadX[y] = q.x; roadW[y] = q.w; } }
   const cloud = (x, y) => N.fbm(x * 0.0022 + sky.cloudOff, y * 0.0022 * sky.stretch, 5) + sky.cloud + 0.25 * (1 - y / waterY);
+  const G4 = 4, GW = Math.ceil(W / G4) + 2, GH = Math.ceil(H / G4) + 2, cg = new Float32Array(GW * GH);
+  // Smoothed cloud field: only the big cloud forms steer the sky lines.
+  for (let gy = 0; gy < GH; gy++) for (let gx = 0; gx < GW; gx++) {
+    const x = gx * G4, y = gy * G4;
+    cg[gy * GW + gx] = N.fbm(x * 0.0022 + sky.cloudOff, y * 0.0022 * sky.stretch, 3) + sky.cloud + 0.25 * (1 - y / waterY);
+  }
+  const cloudS = (x, y) => {
+    const fx = clamp(x / G4, 0, GW - 1.001), fy = clamp(y / G4, 0, GH - 1.001), ix = fx | 0, iy = fy | 0, u = fx - ix, v = fy - iy, i = iy * GW + ix;
+    return (cg[i] * (1 - u) + cg[i + 1] * u) * (1 - v) + (cg[i + GW] * (1 - u) + cg[i + GW + 1] * u) * v;
+  };
   const mist = y => smooth(waterY - H * 0.12, waterY, y);
   const cragMist = sc.kind === 'lake' || sc.kind === 'abbey';
+  const focus = sc.focus;
   const forest = sc.kind === 'forest';
   const moonR = H * 0.035;
   for (let y = 0; y < H; y++) {
@@ -722,38 +743,45 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
         case SKY: {
           if (sc.night && sd < moonR) { t = 1; break; }
           t = sky.dark + (0.97 - sky.dark) * Math.pow(clamp(y / waterY), 0.8) + glow * 0.5;
-          const c = cloud(x, y), cover = smooth(0.05, 0.25, c);
+          const c = 0.6 * cloudS(x, y) + 0.4 * cloud(x, y), cover = smooth(0.0, 0.3, c);
           if (cover > 0) {
             const ux = (sun.x - x) / (sd + 1), uy = (sun.y - y) / (sd + 1);
-            const edge = c - cloud(x + ux * 10, y + uy * 10);
-            t = t * (1 - cover) + cover * clamp(0.28 + edge * 9 + glow * 0.6);
+            const edge = cloudS(x, y) - cloudS(x + ux * 18, y + uy * 18);
+            t = t * (1 - cover) + cover * clamp(0.3 + edge * 7 + glow * 0.6);
           }
           t += rays(x, y);
           break;
         }
         case FAR: t = g + 0.07 * N.fbm(x * 0.01, y * 0.02, 3) + glow * 0.15 + rays(x, y) * 0.6 + 0.15 * mist(y); break;
         case CRAG: {
-          const n = N.fbm(x * 0.008, y * 0.02, 4);
-          const relief = n - N.fbm((x + Math.sign(sun.x - x) * 4) * 0.008, (y - 3) * 0.02, 4);
-          // Bedding planes: tilted dark bands that read as layered rock.
-          const strata = smooth(0.2, 0.45, N.n2(x * 0.01, y * 0.05 + N.n2(x * 0.004, y * 0.004) * 3));
-          t = g + relief * 4 + N.n2(x * 0.05, y * 0.004) * 0.12 - strata * 0.28 + (cragMist ? 0.35 * mist(y) : 0) + rays(x, y) * 0.35;
+          // Flat facets, each lit on its own, with a dark crease where two meet.
+          const [fid, d1, d2] = facet(x, y, 80, 130, 3.3);
+          const strata = smooth(0.25, 0.5, N.n2(x * 0.01, y * 0.05 + N.n2(x * 0.004, y * 0.004) * 3));
+          t = g * 0.75 + (hash(fid * 91.7, 1.3) - 0.5) * 0.36 + 0.1 - 0.28 * (1 - smooth(0, 0.06, d2 - d1)) - strata * 0.12
+            + (cragMist ? 0.35 * mist(y) : 0) + rays(x, y) * 0.35;
           break;
         }
         case CASTLE: t = g + 0.05 * N.n2(x * 0.2, y * 0.2) + 0.15 * mist(y); break;
         case VALLEY: t = 0.8 - 0.3 * (y - waterY) / (H - waterY) + 0.1 * N.fbm(x * 0.005, y * 0.02, 3); break;
         case WATER: t = y < waterY ? 0.84 + 0.25 * N.n2(x * 0.09, y * 0.004) + 0.2 * smooth(waterY - 60, waterY, y) : 0; break;
         case GROUND: {
-          t = g + 0.35 * N.fbm(x * 0.006, y * 0.014, 4) + 0.3 * (1 - smooth(0, 40, y - crest[x])) - 0.35 * smooth(H * 0.72, H, y);
+          t = g + 0.2 * N.fbm(x * 0.003, y * 0.008, 3) + 0.3 * (1 - smooth(0, 40, y - crest[x])) - 0.35 * smooth(H * 0.72, H, y);
           const dx = Math.abs(x - roadX[y]), w = roadW[y];
           if (dx < w / 2) t = 0.78 + 0.12 * N.n2(x * 0.05, y * 0.05) - 0.45 * smooth(w * 0.3, w * 0.5, dx);
           break;
         }
-        case ROCK: t = g + 1.2 * (N.fbm(x * 0.03, y * 0.03, 3) - N.fbm((x + Math.sign(sun.x - x) * 3) * 0.03, (y - 3) * 0.03, 3)); break;
+        case ROCK: {
+          const [fid, d1, d2] = facet(x, y, 26, 34, 7.7);
+          t = g * 0.8 + (hash(fid * 53.1, 2.9) - 0.5) * 0.4 - 0.35 * (1 - smooth(0, 0.08, d2 - d1));
+          break;
+        }
         case TREE: t = g + 0.15 * N.n2(x * 0.1, y * 0.02) + (forest ? rays(x, y) * 0.8 + 0.2 * (1 - y / H) * g : 0); break;
         default: t = g + 0.4 * smooth(0.05, 0.35, N.fbm(x * 0.03, y * 0.03, 3)) * (0.5 + glow) + (forest ? rays(x, y) * 0.6 : 0);
       }
       if (forest && id === GROUND) t += rays(x, y) * 0.5;
+      // Chiaroscuro: light pools on the focus, the plate sinks into shadow at its edges.
+      const fd = Math.hypot((x - focus.x) / W, (y - focus.y) / H);
+      t = t * (1 - 0.4 * smooth(0.25, 0.95, fd)) + (id === SKY ? 0 : 0.08 * Math.exp(-fd * fd / 0.02));
       // Moonlight: everything sinks except the moon itself.
       if (sc.night && !(id === SKY && sd < moonR)) t *= 0.72;
       tone[i] = clamp(t);
@@ -793,29 +821,22 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   // follows a surface: fall lines down rock, lines curling round cloud bellies,
   // along trunks, round boulders. Width swells with darkness; crosshatch
   // families only run where the tone is dark enough to need them.
-  const G4 = 4, GW = Math.ceil(W / G4) + 2, GH = Math.ceil(H / G4) + 2, cg = new Float32Array(GW * GH);
-  // Smoothed cloud field: only the big cloud forms steer the sky lines.
-  for (let gy = 0; gy < GH; gy++) for (let gx = 0; gx < GW; gx++) {
-    const x = gx * G4, y = gy * G4;
-    cg[gy * GW + gx] = N.fbm(x * 0.0022 + sky.cloudOff, y * 0.0022 * sky.stretch, 3) + sky.cloud + 0.25 * (1 - y / waterY);
-  }
-  const cloudS = (x, y) => {
-    const fx = clamp(x / G4, 0, GW - 1.001), fy = clamp(y / G4, 0, GH - 1.001), ix = fx | 0, iy = fy | 0, u = fx - ix, v = fy - iy, i = iy * GW + ix;
-    return (cg[i] * (1 - u) + cg[i + 1] * u) * (1 - v) + (cg[i + GW] * (1 - u) + cg[i + GW + 1] * u) * v;
-  };
   const nearest = (list, x, y) => list.reduce((a, b) => (Math.hypot(b.x - x, b.y - y) < Math.hypot(a.x - x, a.y - y) ? b : a));
   const cragC = sc.crags.map(c => ({ x: c.cx, y: 0, vertical: c.vertical }));
   const dirs = {
+    // Ruled sky: near-straight horizontals, clouds made by line weight alone.
     [SKY]: (x, y) => {
       let tx = cloudS(x, y + 16) - cloudS(x, y - 16), ty = cloudS(x - 16, y) - cloudS(x + 16, y);
       if (tx < 0) { tx = -tx; ty = -ty; }
-      const l = Math.hypot(tx, ty) || 1, k = 0.35 * smooth(0, 0.3, cloudS(x, y));
+      const l = Math.hypot(tx, ty) || 1, k = 0.1 * smooth(0, 0.3, cloudS(x, y));
       return [1 - k + k * tx / l, k * ty / l];
     },
     [FAR]: (x, y) => [1, 0.15 * N.n2(x * 0.005, y * 0.01)],
     [CRAG]: (x, y) => {
-      const c = nearest(cragC, x, y), bend = N.n2(x * 0.008, y * 0.008);
-      return [c.vertical ? 0.35 * bend : Math.tanh((x - c.x) / 40) * 0.6 + 0.6 * bend, 1];
+      // Each facet keeps one line direction, turned from the fall line.
+      const c = nearest(cragC, x, y), turn = (facet(x, y, 80, 130, 3.3)[0] - 0.5) * 1.3;
+      const dx = c.vertical ? 0 : Math.tanh((x - c.x) / 40) * 0.6, ct = Math.cos(turn), st = Math.sin(turn);
+      return [dx * ct - st, dx * st + ct];
     },
     [CASTLE]: () => [0, 1],
     [VALLEY]: (x, y) => [1, 0.1 * N.n2(x * 0.004, y * 0.02)],
@@ -824,19 +845,22 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
       const xi = clamp(x | 0, 6, W - 7), slope = (crest[xi + 6] - crest[xi - 6]) / 12;
       return [1, slope * Math.exp(-Math.max(0, y - crest[xi]) / 120) + 0.25 * N.n2(x * 0.004, y * 0.01)];
     },
-    [ROCK]: (x, y) => { const rk = nearest(sc.rocks, x, y); return [(x - rk.x) / rk.size * 0.9, 1]; },
+    [ROCK]: (x, y) => {
+      const rk = nearest(sc.rocks, x, y), turn = (facet(x, y, 26, 34, 7.7)[0] - 0.5) * 1.6, dx = (x - rk.x) / rk.size * 0.9;
+      return [dx * Math.cos(turn) - Math.sin(turn), dx * Math.sin(turn) + Math.cos(turn)];
+    },
     [TREE]: (x, y) => { const a = img[((y | 0) * W + (x | 0)) * 4 + 2] / 255 * Math.PI; return [Math.cos(a), Math.sin(a)]; },
     [LEAF]: (x, y) => { const a = N.fbm(x * 0.008, y * 0.008, 2) * 6; return [Math.cos(a), Math.sin(a)]; },
   };
   const groups = [
-    { id: SKY, sp: 3.4, wk: 1, rot: [0, 0.3, -0.25] },
-    { id: FAR, sp: 2.6, wk: 0.7, rot: [0, 0.6, -0.6] },
-    { id: CRAG, sp: 2.9, wk: 1, rot: [0, Math.PI / 2, -0.5] },
-    { id: CASTLE, sp: 2.3, wk: 0.9, rot: [0, Math.PI / 2, 0.6] },
+    { id: SKY, sp: 3, wk: 1, rot: [0, 0.22, -0.18] },
+    { id: FAR, sp: 2.4, wk: 0.7, rot: [0, 0.6, -0.6] },
+    { id: CRAG, sp: 2.6, wk: 1, rot: [0, Math.PI / 2, -0.5] },
+    { id: CASTLE, sp: 2.2, wk: 0.9, rot: [0, Math.PI / 2, 0.6] },
     { id: VALLEY, sp: 3, wk: 0.9, rot: [0, 0.4, -0.4] },
-    { id: WATER, sp: 2.7, wk: 1, rot: [0, 0.12, -0.12] },
-    { id: GROUND, sp: 3.6, wk: 0.9, rot: [0, 0.35, -0.3] },
-    { id: ROCK, sp: 2.6, wk: 1, rot: [0, Math.PI / 2, 0.6] },
+    { id: WATER, sp: 2.5, wk: 1, rot: [0, 0.12, -0.12] },
+    { id: GROUND, sp: 3.2, wk: 0.9, rot: [0, 0.35, -0.3] },
+    { id: ROCK, sp: 2.4, wk: 1, rot: [0, Math.PI / 2, 0.6] },
     { id: TREE, sp: 2.6, wk: 1, rot: [0, Math.PI / 2, 0.6] },
     { id: LEAF, sp: 3, wk: 1, rot: [0, 1.2, -1] },
   ];
@@ -943,7 +967,7 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
         for (const [x, y] of pts) {
           const i = ok(x, y);
           const w = i < 0 ? 0 : gr.sp * gr.wk * wmax * Math.pow(clamp((1 - tone[i] - d0) / (d1 - d0)), 0.9);
-          if (w >= 0.25) run.push(x, y, w); else cut();
+          if (w >= 0.18) run.push(x, y, w); else cut();
         }
         cut();
       }
@@ -1077,6 +1101,19 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   for (let k = 1; k <= 30; k++) printOps.push(c => { c.globalAlpha = 1; c.drawImage(before, 0, 0); c.globalAlpha = k / 30; c.drawImage(after, 0, 0); c.globalAlpha = 1; });
   ready(6, printOps);
   return player;
+}
+
+// Jittered-grid Voronoi, cells sx by sy: cell hash in [0, 1), distances to
+// the nearest and second-nearest seed. Rock is cut into these flat facets.
+function facet(x, y, sx, sy, salt) {
+  const gx = Math.floor(x / sx), gy = Math.floor(y / sy);
+  let d1 = 1e9, d2 = 1e9, id = 0;
+  for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
+    const cx = gx + i, cy = gy + j, h = hash(cx * 1.7 + salt, cy * 3.1);
+    const d = Math.hypot(x / sx - cx - hash(cx + salt, cy + 0.5), y / sy - cy - h);
+    if (d < d1) { d2 = d1; d1 = d; id = h; } else if (d < d2) d2 = d;
+  }
+  return [id, d1, d2];
 }
 
 // Cheap per-pixel hash in [0, 1) for paper grain and ink speckle.
