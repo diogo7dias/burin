@@ -4,7 +4,9 @@
 (function (root) {
 'use strict';
 
-const W = 1500, H = 1000, MARGIN = 40;
+// Plate size; makeScene switches to a tall plate for about 4 seeds in 10.
+let W = 1500, H = 1000;
+const MARGIN = 40;
 const INK = '#1c140d', PAPER = '#ebe1c9', GRAPHITE = 'rgba(70,64,58,0.24)';
 // Layer ids live in the red channel of the mask canvas, spaced so antialiased
 // edge pixels snap back to a neighbouring layer.
@@ -95,6 +97,7 @@ function makeScene(seed) {
   const off = () => r(0, 1000);
   const line = (x0, x1, step, f) => { const pts = []; for (let x = x0; x <= x1 + 1e-6; x += step) pts.push([x, f(x)]); return pts; };
 
+  [W, H] = hash(seed * 0.37, 9.1) < 0.4 ? [1000, 1400] : [1500, 1000];
   const kind = KINDS[Math.floor(R() * KINDS.length)];
   const night = chance(0.25);
   const sun = { x: W * r(0.12, 0.88), y: H * r(0.06, 0.3) };
@@ -163,7 +166,7 @@ function makeScene(seed) {
     const s = r(0.4, 0.75), n = chance(0.4) ? 2 : 1;
     for (let i = 0; i < n; i++) {
       const q = roadAt(sc.road, s + i * 0.04);
-      sc.figures.push({ x: q.x + r(-0.2, 0.2) * q.w, y: q.y, h: 46 * (1 - s) + 10 });
+      sc.figures.push({ x: q.x + r(-0.2, 0.2) * q.w, y: q.y, h: 46 * (1 - s) + 10, kind: chance(0.4) ? 'rider' : 'pilgrim' });
     }
   };
   const framingTrees = (leafy) => {
@@ -209,6 +212,11 @@ function makeScene(seed) {
       if (chance(0.75)) { const c = tallest(); c.castle = makeCastle(c, r, chance, sun.x < c.cx); }
       addGround(H * r(0.8, 0.9), chance(0.6) ? H * r(0.08, 0.3) : 0, chance(0.6) ? H * r(0.08, 0.3) : 0, wy + 25);
       addRoad(W * r(0.3, 0.7), 0.5);
+      // A rider on the near crest looking toward the castle, as in the Idylls plates.
+      if (!sc.road && chance(0.6)) {
+        const x = chance(0.5) ? W * r(0.08, 0.3) : W * r(0.7, 0.92);
+        sc.figures.push({ x, y: yAt(sc.ground, x) + 3, h: H * r(0.08, 0.12), kind: 'rider' });
+      }
       scatterRocks(Math.floor(r(2, 9)));
       framingTrees();
       addBirds(0.45);
@@ -258,7 +266,7 @@ function makeScene(seed) {
       const bridge = [[xa, yb], ...brokenTop(xa, xb, yb - 8, 0).map(([x]) => [x, yb - (Math.floor(x / 9) % 2 ? 8 : 0)]), [xb, yb], [xb, yb + depth]];
       for (let k = 0; k <= 24; k++) { const a = k / 24 * Math.PI; bridge.push([(xa + xb) / 2 + Math.cos(a) * (xb - xa) / 2, yb + depth - Math.sin(a) * (depth - thick)]); }
       sc.structures.push({ pts: bridge, tone: 0.55, masonry: true, z: 'back' });
-      if (chance(0.6)) sc.figures.push({ x: r(xa + 60, xb - 60), y: yb - 9, h: 24 });
+      if (chance(0.6)) sc.figures.push({ x: r(xa + 60, xb - 60), y: yb - 9, h: 24, kind: chance(0.5) ? 'rider' : 'pilgrim' });
       const fx = (edgeL(sc.waterY) + edgeR(sc.waterY)) / 2 + r(-40, 40), fw = r(30, 70), fy = yb + depth - 10, fo = off();
       const fall = [];
       for (let y = fy; y <= sc.waterY + 4; y += 8) fall.push([fx - fw / 2 - (y - fy) * 0.08 + N.n2(y * 0.02, fo) * 6, y]);
@@ -286,6 +294,14 @@ function makeScene(seed) {
       if (chance(0.6)) { const rr = fw * 0.08, ry = base - fh - gh * 0.25, rose = []; for (let k = 0; k < 20; k++) rose.push([cx + Math.cos(k / 20 * 6.283) * rr, ry + Math.sin(k / 20 * 6.283) * rr]); holes.push(rose); }
       sc.structures.push({ pts: facade, holes, tone: 0.6, masonry: true, z: 'mid' });
       sc.focus = { x: cx, y: base - fh * 0.5 };
+      // Monks gathered near the ruin.
+      if (chance(0.7)) {
+        const gx = cx + (chance(0.5) ? -1 : 1) * fw * r(0.6, 0.9);
+        for (let k = 0, n = 2 + Math.floor(r(0, 3)); k < n; k++) {
+          const x = gx + r(-40, 40);
+          sc.figures.push({ x, y: yAt(sc.ground, x) + 4 + r(0, 10), h: H * r(0.045, 0.06), kind: 'pilgrim' });
+        }
+      }
       // Nave wall running off to one side, lower and more broken.
       const s = chance(0.5) ? -1 : 1, wl = fw * r(0.7, 1.1), wh = fh * r(0.35, 0.55), x0 = s < 0 ? left - wl : right, x1 = x0 + wl;
       const wall = [[x0, base + 30], ...brokenTop(x0, x1, base - wh, wh * 0.4), [x1, base + 30]];
@@ -333,7 +349,7 @@ function makeScene(seed) {
       addGround(H + 60, side > 0 && bank ? H * r(0.2, 0.35) : 0, side < 0 && bank ? H * r(0.2, 0.35) : 0, sc.waterY + 25);
       if (bank) {
         const bx = side > 0 ? W * r(0.08, 0.2) : W * r(0.8, 0.92);
-        sc.figures.push({ x: bx, y: yAt(sc.ground, bx) + 4, h: 44 });
+        sc.figures.push({ x: bx, y: yAt(sc.ground, bx) + 4, h: 44, kind: 'pilgrim' });
         scatterRocks(Math.floor(r(1, 4)));
       }
       addBirds(0.8);
@@ -344,6 +360,7 @@ function makeScene(seed) {
   const held = sc.crags.find(c => c.castle);
   if (held) { const top = held.pts.reduce((a, b) => (b[1] < a[1] ? b : a)); sc.focus = { x: top[0], y: top[1] }; }
   if (kind === 'forest') sc.focus = { x: sun.x, y: H * 0.55 };
+  for (const f of sc.figures) f.face = f.face || (sc.focus.x < f.x ? -1 : 1);
   return sc;
 }
 
@@ -522,6 +539,7 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   const sc = makeScene(seed), N = noiseFor(seed), R2 = mulberry32((seed + 7919) >>> 0);
   const { sun, waterY, sky } = sc;
   canvas.width = W; canvas.height = H;
+  if (overlay) { overlay.width = W; overlay.height = H; }
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = PAPER; ctx.fillRect(0, 0, W, H);
   const fox = ctx.createRadialGradient(W / 2, H / 2, H * 0.45, W / 2, H / 2, W * 0.75);
@@ -776,7 +794,14 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
           break;
         }
         case TREE: t = g + 0.15 * N.n2(x * 0.1, y * 0.02) + (forest ? rays(x, y) * 0.8 + 0.2 * (1 - y / H) * g : 0); break;
-        default: t = g + 0.4 * smooth(0.05, 0.35, N.fbm(x * 0.03, y * 0.03, 3)) * (0.5 + glow) + (forest ? rays(x, y) * 0.6 : 0);
+        default: {
+          // Leaves: the mass breaks into small clumps, each lit on its sunward side
+          // with a dark crease beneath, the cauliflower texture of Doré's trees.
+          const [, d1, d2, px, py] = facet(x, y, 16, 13, 5.5);
+          const nx = (x - px) / 16, ny = (y - py) / 13, ux = (sun.x - x) / (sd + 1), uy = (sun.y - y) / (sd + 1);
+          t = g + 0.25 * smooth(0.05, 0.35, N.fbm(x * 0.02, y * 0.02, 2)) * (0.5 + glow) + 0.4 * clamp(nx * ux + ny * uy + 0.15)
+            - 0.25 * (1 - smooth(0, 0.1, d2 - d1)) + (forest ? rays(x, y) * 0.6 : 0);
+        }
       }
       if (forest && id === GROUND) t += rays(x, y) * 0.5;
       // Chiaroscuro: light pools on the focus, the plate sinks into shadow at its edges.
@@ -850,7 +875,10 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
       return [dx * Math.cos(turn) - Math.sin(turn), dx * Math.sin(turn) + Math.cos(turn)];
     },
     [TREE]: (x, y) => { const a = img[((y | 0) * W + (x | 0)) * 4 + 2] / 255 * Math.PI; return [Math.cos(a), Math.sin(a)]; },
-    [LEAF]: (x, y) => { const a = N.fbm(x * 0.008, y * 0.008, 2) * 6; return [Math.cos(a), Math.sin(a)]; },
+    [LEAF]: (x, y) => {
+      const [, , , px, py] = facet(x, y, 16, 13, 5.5), dx = x - px, dy = y - py;
+      return Math.hypot(dx, dy) < 2 ? [1, 0.3] : [-dy / 13, dx / 16];
+    },
   };
   const groups = [
     { id: SKY, sp: 3, wk: 1, rot: [0, 0.22, -0.18] },
@@ -933,16 +961,18 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
       const seeds = [];
       for (let y = bx[1]; y <= bx[3]; y += 9) for (let x = bx[0]; x <= bx[2]; x += 9) {
         const sx = x + R2() * 8, sy = y + R2() * 8;
-        if (ok(sx, sy) >= 0) seeds.push({ x: sx, y: sy });
+        // Seed only well inside the layer: antialiased strays at its edges start no line.
+        if (ok(sx, sy) >= 0 && ok(sx - 3, sy) >= 0 && ok(sx + 3, sy) >= 0 && ok(sx, sy - 3) >= 0 && ok(sx, sy + 3) >= 0) seeds.push({ x: sx, y: sy });
       }
       if (!seeds.length) continue;
       // The library stops once no line offers a free neighbour, even with seeds
       // left; restart it on the leftover seeds with every earlier point
       // pre-loaded into its spacing grid.
       const lines = [], placed = [];
-      // ponytail: capped at 15 restarts per layer pass; tiny leftover gaps stay bare. Raise if gaps show.
-      let pending = seeds, runs = 0;
-      while (pending.length && !token.cancelled && runs++ < 15) {
+      // ponytail: stops after 15 fruitless restarts in a row (60 in all); tiny leftover gaps stay bare.
+      let pending = seeds, runs = 0, idle = 0;
+      while (pending.length && !token.cancelled && runs++ < 60 && idle < 15) {
+        const before = lines.length;
         const job = SL({
           vectorField: p => {
             if (ok(p.x, p.y) < 0) return;
@@ -958,6 +988,7 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
         for (const q of placed) grid.occupyCoordinates(q);
         await job.run();
         pending = pending.filter(q => !grid.isTaken(q.x, q.y, d => d < gr.sp));
+        idle = lines.length > before ? 0 : idle + 1;
       }
       if (token.cancelled) return player;
       // Split each streamline where the tone is too light to cut.
@@ -1048,9 +1079,10 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
     }
     detailOps.push(segsOp(blades, 0.6));
   }
-  // Pilgrims: cloak, head, staff and a short cast shadow.
-  for (const { x: fx, y: fy, h } of sc.figures) {
+  // Figures: pilgrims with cloak and staff, or knights on horseback; each casts a short shadow.
+  for (const { x: fx, y: fy, h, kind, face } of sc.figures) {
     const sd = sun.x < fx ? 1 : -1;
+    if (kind === 'rider') { detailOps.push(c => drawRider(c, fx, fy, h, face, sd)); continue; }
     detailOps.push(c => {
       c.fillStyle = INK; c.beginPath();
       c.moveTo(fx - h * 0.11, fy - h * 0.78);
@@ -1103,17 +1135,45 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   return player;
 }
 
+// Knight on horseback, side view, in unit coordinates scaled so the rider's
+// head reaches h. Walking pose; cloak streams back; lance with pennant.
+const HORSE = [[-0.46, -0.64], [-0.3, -0.66], [0, -0.62], [0.22, -0.66], [0.36, -0.8], [0.46, -0.97], [0.47, -1.04], [0.51, -0.98],
+  [0.66, -0.8], [0.7, -0.72], [0.62, -0.69], [0.52, -0.74], [0.4, -0.58], [0.38, -0.46], [0.2, -0.38], [-0.3, -0.38], [-0.46, -0.44], [-0.52, -0.56]];
+const HORSE_LIMBS = [
+  [[0.34, -0.44], [0.4, -0.2], [0.38, 0], 0.06], [[0.26, -0.42], [0.2, -0.2], [0.24, -0.02], 0.055],
+  [[-0.4, -0.46], [-0.36, -0.22], [-0.44, 0], 0.07], [[-0.3, -0.44], [-0.24, -0.22], [-0.28, 0], 0.06],
+  [[-0.48, -0.6], [-0.6, -0.4], [-0.58, -0.2], 0.06], [[0.02, -0.64], [0.1, -0.5], [0.08, -0.4], 0.07],
+];
+const RIDER = [[-0.06, -0.64], [0.09, -0.64], [0.08, -0.95], [-0.04, -0.97]];
+const CLOAK = [[-0.05, -0.95], [-0.36, -0.6], [-0.18, -0.58], [0, -0.66]];
+function drawRider(c, x, y, h, face, sd) {
+  const s = h / 1.2, P = ([u, v]) => [x + u * s * face, y + v * s];
+  const fill = pts => { c.beginPath(); pts.map(P).forEach(([px, py], i) => (i ? c.lineTo(px, py) : c.moveTo(px, py))); c.closePath(); c.fill(); };
+  c.fillStyle = INK; c.strokeStyle = INK; c.lineCap = 'round'; c.lineJoin = 'round';
+  fill(HORSE); fill(RIDER); fill(CLOAK);
+  for (const [a, b, e, w] of HORSE_LIMBS) {
+    c.lineWidth = Math.max(0.8, w * s); c.beginPath();
+    c.moveTo(...P(a)); c.quadraticCurveTo(...P(b), ...P(e)); c.stroke();
+  }
+  c.beginPath(); c.arc(...P([0.02, -1.04]), 0.075 * s, 0, 7); c.fill();
+  c.lineWidth = Math.max(0.7, 0.02 * s); c.beginPath(); c.moveTo(...P([-0.25, -0.45])); c.lineTo(...P([0.5, -1.6])); c.stroke();
+  fill([[0.5, -1.6], [0.72, -1.52], [0.48, -1.47]]);
+  c.lineWidth = 0.7; c.beginPath();
+  for (let k = 0; k < 4; k++) { c.moveTo(x, y + k * 1.6); c.lineTo(x + sd * s * (0.9 - k * 0.15), y + k * 1.6); }
+  c.stroke();
+}
+
 // Jittered-grid Voronoi, cells sx by sy: cell hash in [0, 1), distances to
 // the nearest and second-nearest seed. Rock is cut into these flat facets.
 function facet(x, y, sx, sy, salt) {
   const gx = Math.floor(x / sx), gy = Math.floor(y / sy);
-  let d1 = 1e9, d2 = 1e9, id = 0;
+  let d1 = 1e9, d2 = 1e9, id = 0, px = 0, py = 0;
   for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
     const cx = gx + i, cy = gy + j, h = hash(cx * 1.7 + salt, cy * 3.1);
     const d = Math.hypot(x / sx - cx - hash(cx + salt, cy + 0.5), y / sy - cy - h);
-    if (d < d1) { d2 = d1; d1 = d; id = h; } else if (d < d2) d2 = d;
+    if (d < d1) { d2 = d1; d1 = d; id = h; px = (cx + hash(cx + salt, cy + 0.5)) * sx; py = (cy + h) * sy; } else if (d < d2) d2 = d;
   }
-  return [id, d1, d2];
+  return [id, d1, d2, px, py];
 }
 
 // Cheap per-pixel hash in [0, 1) for paper grain and ink speckle.
