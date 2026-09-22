@@ -322,9 +322,19 @@ function makeScene(seed) {
           : [[-0.3, 0], [-0.3, -0.75], [-0.2, -0.9], [0, -0.96], [0.2, -0.9], [0.3, -0.75], [0.3, 0]];
         sc.structures.push({ pts: shape.map(([u, v]) => [gx + (u - v * lean) * sz * 1.6, gy + v * sz * 1.6]), tone: r(0.4, 0.7), z: 'front' });
       }
-      const ivy = [];
-      for (let k = 0, n = Math.floor(r(4, 10)); k < n; k++) ivy.push(blobPts(chance(0.5) ? left + r(-8, 12) : right + r(-12, 8), base - fh * r(0.05, 0.7), r(8, 22), off(), N));
-      sc.trees.push({ segs: [], clumps: ivy, tone: 0.28, leafTone: 0.25 });
+      // Ivy: vines climb from the foot of the walls, wandering, throwing side shoots.
+      sc.vines = [];
+      for (let k = 0, n = Math.floor(r(3, 7)); k < n; k++) {
+        const x0 = chance(0.5) ? left + r(-6, fw * 0.25) : right - r(-6, fw * 0.25), top = base - fh * r(0.3, 0.95), o = off();
+        const stem = [];
+        for (let y = base + 5, x = x0; y > top; y -= 6) { x += N.n2(y * 0.03, o) * 3; stem.push([x, y]); }
+        sc.vines.push(stem);
+        for (let b = 0; b < stem.length; b += 4 + Math.floor(r(0, 5))) {
+          const [bx, by] = stem[b], dir = chance(0.5) ? -1 : 1, shoot = [[bx, by]];
+          for (let j = 1, len = r(3, 8); j < len; j++) shoot.push([bx + dir * j * 6, by - j * r(1, 4)]);
+          sc.vines.push(shoot);
+        }
+      }
       addRoad(cx, 0.4);
       framingTrees(false);
       addBirds(0.75, 8);
@@ -492,7 +502,7 @@ function play(ctx, phases, token, onProgress, overlay) {
           left += h.list.length - h.i;
           if (out) break;
         }
-        onProgress((before + ph.ms * f) / total);
+        onProgress((before + ph.ms * f) / total, ph.name);
         if (out || left) break;
         before += ph.ms; pi++; t0 = now; hs = null;
       }
@@ -1047,6 +1057,16 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
     const [sx, sy] = rk.pts[Math.floor(R2() * 12)];
     lineOps(detailOps, [[sx, sy], [sx + (rk.x - sx) * 0.4, sy + rk.size * 0.3], [sx + (rk.x - sx) * 0.6, sy + rk.size * 0.5]], 0.8, INK, 0.3);
   }
+  for (const v of sc.vines || []) {
+    lineOps(detailOps, v, 1, INK, 0.4);
+    const dark = [], open = [];
+    for (const [x, y] of v) for (let k = 0; k < 2; k++) {
+      const lx = x + (R2() - 0.5) * 9, ly = y + (R2() - 0.5) * 7, rr = 1.6 + R2() * 1.8, a = R2() * 6.28;
+      (R2() < 0.6 ? dark : open).push([lx, ly, rr, a]);
+    }
+    detailOps.push(c => { c.fillStyle = INK; c.beginPath(); for (const [x, y, rr, a] of dark) { c.moveTo(x + rr, y); c.ellipse(x, y, rr, rr * 0.6, a, 0, 6.29); } c.fill(); });
+    detailOps.push(leafOp(open));
+  }
   // Leaves: small open loops on lit foliage, scallops along the outer edge.
   for (const t of sc.trees) {
     for (const cl of t.clumps) {
@@ -1082,19 +1102,12 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   // Figures: pilgrims with cloak and staff, or knights on horseback; each casts a short shadow.
   for (const { x: fx, y: fy, h, kind, face } of sc.figures) {
     const sd = sun.x < fx ? 1 : -1;
-    if (kind === 'rider') { detailOps.push(c => drawRider(c, fx, fy, h, face, sd)); continue; }
+    const shape = kind === 'rider' ? o => riderShape(o, fx, fy, h, face) : o => pilgrimShape(o, fx, fy, h);
+    const reach = kind === 'rider' ? 0.75 : 0.5;
     detailOps.push(c => {
-      c.fillStyle = INK; c.beginPath();
-      c.moveTo(fx - h * 0.11, fy - h * 0.78);
-      c.quadraticCurveTo(fx - h * 0.2, fy - h * 0.3, fx - h * 0.19, fy);
-      c.lineTo(fx + h * 0.17, fy);
-      c.quadraticCurveTo(fx + h * 0.16, fy - h * 0.4, fx + h * 0.1, fy - h * 0.78);
-      c.closePath(); c.fill();
-      c.beginPath(); c.arc(fx, fy - h * 0.88, h * 0.09, 0, 7); c.fill();
-      c.strokeStyle = INK; c.lineWidth = Math.max(0.8, h * 0.025);
-      c.beginPath(); c.moveTo(fx + h * 0.26, fy + 1); c.lineTo(fx + h * 0.21, fy - h * 1.05); c.stroke();
-      c.lineWidth = 0.7; c.beginPath();
-      for (let k = 0; k < 4; k++) { c.moveTo(fx + sd * h * 0.05, fy + k * 1.6); c.lineTo(fx + sd * h * (0.55 - k * 0.08), fy + k * 1.6); }
+      hatchedFigure(c, fx, fy, h, sd, shape);
+      c.strokeStyle = INK; c.lineWidth = 0.7; c.beginPath();
+      for (let k = 0; k < 4; k++) { c.moveTo(fx + sd * h * 0.05, fy + k * 1.6); c.lineTo(fx + sd * h * (reach - k * 0.08), fy + k * 1.6); }
       c.stroke();
     });
   }
@@ -1146,7 +1159,7 @@ const HORSE_LIMBS = [
 ];
 const RIDER = [[-0.06, -0.64], [0.09, -0.64], [0.08, -0.95], [-0.04, -0.97]];
 const CLOAK = [[-0.05, -0.95], [-0.36, -0.6], [-0.18, -0.58], [0, -0.66]];
-function drawRider(c, x, y, h, face, sd) {
+function riderShape(c, x, y, h, face) {
   const s = h / 1.2, P = ([u, v]) => [x + u * s * face, y + v * s];
   const fill = pts => { c.beginPath(); pts.map(P).forEach(([px, py], i) => (i ? c.lineTo(px, py) : c.moveTo(px, py))); c.closePath(); c.fill(); };
   c.fillStyle = INK; c.strokeStyle = INK; c.lineCap = 'round'; c.lineJoin = 'round';
@@ -1158,9 +1171,51 @@ function drawRider(c, x, y, h, face, sd) {
   c.beginPath(); c.arc(...P([0.02, -1.04]), 0.075 * s, 0, 7); c.fill();
   c.lineWidth = Math.max(0.7, 0.02 * s); c.beginPath(); c.moveTo(...P([-0.25, -0.45])); c.lineTo(...P([0.5, -1.6])); c.stroke();
   fill([[0.5, -1.6], [0.72, -1.52], [0.48, -1.47]]);
-  c.lineWidth = 0.7; c.beginPath();
-  for (let k = 0; k < 4; k++) { c.moveTo(x, y + k * 1.6); c.lineTo(x + sd * s * (0.9 - k * 0.15), y + k * 1.6); }
-  c.stroke();
+}
+
+function pilgrimShape(c, x, y, h) {
+  c.fillStyle = INK; c.strokeStyle = INK; c.lineCap = 'round';
+  c.beginPath();
+  c.moveTo(x - h * 0.11, y - h * 0.78);
+  c.quadraticCurveTo(x - h * 0.2, y - h * 0.3, x - h * 0.19, y);
+  c.lineTo(x + h * 0.17, y);
+  c.quadraticCurveTo(x + h * 0.16, y - h * 0.4, x + h * 0.1, y - h * 0.78);
+  c.closePath(); c.fill();
+  c.beginPath(); c.arc(x, y - h * 0.88, h * 0.09, 0, 7); c.fill();
+  c.lineWidth = Math.max(0.8, h * 0.025);
+  c.beginPath(); c.moveTo(x + h * 0.26, y + 1); c.lineTo(x + h * 0.21, y - h * 1.05); c.stroke();
+}
+
+// A figure engraved rather than blotted: its silhouette filled with diagonal
+// hatching that thins toward the light, closed by a one-pixel contour.
+// Figures too small to hold hatching stay solid.
+function hatchedFigure(c, x, y, h, sd, shape) {
+  if (h < 22) { shape(c); return; }
+  const x0 = Math.floor(x - h * 0.85), y0 = Math.floor(y - h * 1.45), bw = Math.ceil(h * 1.7) + 2, bh = Math.ceil(h * 1.47) + 4;
+  const off = document.createElement('canvas');
+  off.width = bw; off.height = bh;
+  const o = off.getContext('2d', { willReadFrequently: true });
+  o.translate(-x0, -y0); shape(o); o.setTransform(1, 0, 0, 1, 0, 0);
+  const mask = o.getImageData(0, 0, bw, bh).data;
+  o.clearRect(0, 0, bw, bh);
+  o.strokeStyle = INK; o.lineCap = 'round';
+  for (let k = -bh; k < bw; k += 2.2) {
+    for (let t = 0; t < bh; t += 3) {
+      const px = k + t * 0.55, u = (px - (x - x0)) / (h * 0.35);
+      o.lineWidth = 0.35 + 1.5 * smooth(-0.8, 0.6, sd * u);
+      o.beginPath(); o.moveTo(px, t); o.lineTo(px + 1.65, t + 3); o.stroke();
+    }
+  }
+  const img = o.getImageData(0, 0, bw, bh), d = img.data, A = i => mask[i * 4 + 3];
+  for (let i = 0, n = bw * bh; i < n; i++) {
+    const a = A(i), px = i % bw;
+    if (!a) { d[i * 4 + 3] = 0; continue; }
+    const edge = px === 0 || px === bw - 1 || i < bw || i >= n - bw || !A(i - 1) || !A(i + 1) || !A(i - bw) || !A(i + bw);
+    d[i * 4] = 0x1c; d[i * 4 + 1] = 0x14; d[i * 4 + 2] = 0x0d;
+    d[i * 4 + 3] = edge ? a : Math.min(a, d[i * 4 + 3]);
+  }
+  o.putImageData(img, 0, 0);
+  c.drawImage(off, x0, y0);
 }
 
 // Jittered-grid Voronoi, cells sx by sy: cell hash in [0, 1), distances to
