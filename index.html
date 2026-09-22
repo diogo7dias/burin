@@ -89,6 +89,7 @@
   <button id="close" class="ghost" type="button">Close</button>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/@anvaka/streamlines@1.6.0/dist/streamlines.umd.js"></script>
 <script src="draw.js"></script>
 <script>
   const canvas = document.getElementById('plate');
@@ -105,7 +106,13 @@
     caption.innerHTML = `Engraving plate <b>No. ${seed}</b>… <span class="hint">tap the plate to finish</span>`;
     saveBtn.disabled = true;
     canvas.classList.add('drawing');
-    const done = await Engraver.render(canvas, seed, { token, onProgress: p => (bar.style.width = (p * 100).toFixed(0) + '%') });
+    let done;
+    try {
+      done = await Engraver.render(canvas, seed, { token, onProgress: p => (bar.style.width = (p * 100).toFixed(0) + '%') });
+    } catch (err) {
+      caption.textContent = `${err.message} Check the connection and reload the page.`;
+      return;
+    }
     if (!done) return;
     bar.style.width = '0';
     canvas.classList.remove('drawing');
