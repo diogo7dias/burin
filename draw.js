@@ -456,8 +456,8 @@ function makeTree(x, y, height, lean, leafy, R, r, N, { wk = 1, tone = 0.28, dep
   return { segs, clumps, tone, leafTone: 0.2 };
 }
 
-// Darkness bands: family i starts at d0, reaches full width at d1.
-const BANDS = [[0.04, 0.55, 0.6], [0.42, 0.82, 0.45], [0.72, 1, 0.4]];
+// Darkness bands: family i starts at d0, reaches full pen pressure at d1.
+const BANDS = [[0.04, 0.5], [0.38, 0.78], [0.66, 1]];
 
 const tick = () => new Promise(res => setTimeout(res, 0));
 
@@ -890,17 +890,18 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
       return Math.hypot(dx, dy) < 2 ? [1, 0.3] : [-dy / 13, dx / 16];
     },
   };
+  // sp: line spacing, wk: nib width, pen: stroke length range before the hand lifts.
   const groups = [
-    { id: SKY, sp: 3, wk: 1, rot: [0, 0.22, -0.18] },
-    { id: FAR, sp: 2.4, wk: 0.7, rot: [0, 0.6, -0.6] },
-    { id: CRAG, sp: 2.6, wk: 1, rot: [0, Math.PI / 2, -0.5] },
-    { id: CASTLE, sp: 2.2, wk: 0.9, rot: [0, Math.PI / 2, 0.6] },
-    { id: VALLEY, sp: 3, wk: 0.9, rot: [0, 0.4, -0.4] },
-    { id: WATER, sp: 2.5, wk: 1, rot: [0, 0.12, -0.12] },
-    { id: GROUND, sp: 3.2, wk: 0.9, rot: [0, 0.35, -0.3] },
-    { id: ROCK, sp: 2.4, wk: 1, rot: [0, Math.PI / 2, 0.6] },
-    { id: TREE, sp: 2.6, wk: 1, rot: [0, Math.PI / 2, 0.6] },
-    { id: LEAF, sp: 3, wk: 1, rot: [0, 1.2, -1] },
+    { id: SKY, sp: 4.2, wk: 1, pen: [50, 140], rot: [0, 0.6, -0.55] },
+    { id: FAR, sp: 3.6, wk: 0.8, pen: [30, 80], rot: [0, 0.7, -0.6] },
+    { id: CRAG, sp: 3.8, wk: 1.1, pen: [25, 70], rot: [0, 0.9, -0.7] },
+    { id: CASTLE, sp: 3.4, wk: 1, pen: [60, 160], rot: [0, Math.PI / 2, 0.7] },
+    { id: VALLEY, sp: 4.2, wk: 1, pen: [35, 90], rot: [0, 0.5, -0.5] },
+    { id: WATER, sp: 3.8, wk: 1, pen: [40, 120], rot: [0, 0.2, -0.2] },
+    { id: GROUND, sp: 4.4, wk: 1.1, pen: [25, 70], rot: [0, 0.6, -0.5] },
+    { id: ROCK, sp: 3.6, wk: 1.1, pen: [15, 40], rot: [0, 0.9, -0.7] },
+    { id: TREE, sp: 3.6, wk: 1, pen: [40, 110], rot: [0, Math.PI / 2, 0.7] },
+    { id: LEAF, sp: 4, wk: 1, pen: [8, 22], rot: [0, 1.1, -0.9] },
   ];
   // A hatch line as a growable filled stroke; key orders neighbours side by side.
   const fillStroke = (run, layer) => {
@@ -942,13 +943,14 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
     return out;
   };
   const passes = [[], [], []];
-  // Run = flat [x, y, width, ...]; outline both sides, tapering the ends like a burin cut.
+  // Run = flat [x, y, width, ...]; outline both sides. A pen stroke lands with
+  // a little pressure and thins out as the nib lifts away.
   const runPoly = run => {
     const n = run.length / 3, poly = new Float32Array(n * 4);
     for (let k = 0; k < n; k++) {
       const a = Math.max(0, k - 1) * 3, b = Math.min(n - 1, k + 1) * 3;
       const dx = run[b] - run[a], dy = run[b + 1] - run[a + 1], l = Math.hypot(dx, dy) || 1;
-      const taper = Math.min(1, (k + 1) / 4, (n - k) / 4);
+      const taper = Math.min(1, 0.6 + k * 0.2) * (0.3 + 0.7 * Math.min(1, (n - 1 - k) / (n * 0.4)));
       const hw = run[k * 3 + 2] * taper / 2, nx = -dy / l * hw, ny = dx / l * hw;
       poly[k * 2] = run[k * 3] + nx; poly[k * 2 + 1] = run[k * 3 + 1] + ny;
       poly[(2 * n - 1 - k) * 2] = run[k * 3] - nx; poly[(2 * n - 1 - k) * 2 + 1] = run[k * 3 + 1] - ny;
@@ -962,7 +964,7 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
     // Antialiased mask edges can leave stray pixels of a layer the scene lacks.
     if (bx[2] < bx[0] || (gr.id === ROCK && !sc.rocks.length) || (gr.id === CRAG && !sc.crags.length)) continue;
     for (let f = 0; f < 3; f++) {
-      const [d0, d1, wmax] = BANDS[f], cr = Math.cos(gr.rot[f]), sr = Math.sin(gr.rot[f]);
+      const [d0, d1] = BANDS[f], cr = Math.cos(gr.rot[f]), sr = Math.sin(gr.rot[f]);
       const ok = (x, y) => {
         if (x < 0 || y < 0 || x >= W || y >= H) return -1;
         const i = (y | 0) * W + (x | 0);
@@ -1001,14 +1003,35 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
         idle = lines.length > before ? 0 : idle + 1;
       }
       if (token.cancelled) return player;
-      // Split each streamline where the tone is too light to cut.
+      // Cut each streamline into pen strokes: a hand's length, then a small lift.
+      // A stroke starts only where the tone is clearly dark enough and runs on
+      // until it is clearly too light, so light areas never crumble into specks.
+      // Each stroke bows slightly, as a wrist swings, and wavers a little.
       for (const pts of lines) {
-        let run = [];
-        const cut = () => { if (run.length >= 6) passes[f].push(fillStroke(run, gr.id)); run = []; };
-        for (const [x, y] of pts) {
-          const i = ok(x, y);
-          const w = i < 0 ? 0 : gr.sp * gr.wk * wmax * Math.pow(clamp((1 - tone[i] - d0) / (d1 - d0)), 0.9);
-          if (w >= 0.18) run.push(x, y, w); else cut();
+        let run = [], len = 0, gap = R2() * 6, reach = 0;
+        const cut = () => {
+          const n = run.length / 3;
+          if (len >= Math.min(8, gr.pen[0])) {
+            const bow = (R2() - 0.5) * 0.04 * len, o = R2() * 1000;
+            const ex = run[run.length - 3] - run[0], ey = run[run.length - 2] - run[1], el = Math.hypot(ex, ey) || 1;
+            for (let k = 0; k < n; k++) {
+              const t = k / (n - 1), off = bow * 4 * t * (1 - t) + N.n2(k * 0.05, o) * 0.35;
+              run[k * 3] += -ey / el * off; run[k * 3 + 1] += ex / el * off;
+            }
+            passes[f].push(fillStroke(run, gr.id));
+          }
+          if (run.length) gap = 2 + R2() * 5;
+          run = []; len = 0;
+        };
+        for (let k = 0; k < pts.length; k++) {
+          const [x, y] = pts[k], step = k ? Math.hypot(x - pts[k - 1][0], y - pts[k - 1][1]) : 0;
+          if (gap > 0) { gap -= step; continue; }
+          const i = ok(x, y), lv = i < 0 ? -1 : (1 - tone[i] - d0) / (d1 - d0);
+          if (lv < (run.length ? 0 : 0.1)) { cut(); continue; }
+          if (!run.length) reach = gr.pen[0] + R2() * (gr.pen[1] - gr.pen[0]);
+          if (run.length) len += step;
+          run.push(x, y, gr.wk * (0.55 + 1.7 * Math.pow(clamp(lv), 1.2)));
+          if (len >= reach) cut();
         }
         cut();
       }

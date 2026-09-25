@@ -4,7 +4,7 @@ Landscape engravings in the manner of Gustave Doré, generated from a single see
 
 **Live:** https://diogo7dias.github.io/burin/
 
-Each seed picks a scene (lake and castle, dark wood, gorge, ruined abbey, stormy headland), sometimes by moonlight, sometimes as a tall plate. The plate is sketched in pencil, then hatched in three passes with a burin, detailed, and pulled as a print. The seed lives in the URL, so any plate can be shared.
+Each seed picks a scene (lake and castle, dark wood, gorge, ruined abbey, stormy headland), sometimes by moonlight, sometimes as a tall plate. The plate is sketched in pencil, then hatched in three passes of pen strokes, detailed, and pulled as a print. The seed lives in the URL, so any plate can be shared.
 
 Keys: `n` new plate, `space` finish, `s` save png.
 
