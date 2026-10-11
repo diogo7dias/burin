@@ -543,8 +543,8 @@ function makeTree(x, y, height, lean, leafy, R, r, N, { wk = 1, tone = 0.28, dep
   return { segs, clumps, tone, leafTone: 0.2 };
 }
 
-// Darkness bands: family i starts at d0, reaches full width at d1.
-const BANDS = [[0.04, 0.55, 0.6], [0.42, 0.82, 0.45], [0.72, 1, 0.4]];
+// Darkness bands: family i starts at d0, reaches full pen pressure at d1.
+const BANDS = [[0.04, 0.5], [0.38, 0.78], [0.66, 1]];
 
 const tick = () => new Promise(res => setTimeout(res, 0));
 
@@ -816,40 +816,6 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   for (let i = 0, n = W * H; i < n; i++) ids[i] = lut[img[i * 4]];
   const idAt = (x, y) => ids[clamp(y | 0, 0, H - 1) * W + clamp(x | 0, 0, W - 1)];
 
-  // 3. Ink outlines with calligraphic organic taper and subtle stone weathering
-  const inkWhere = (list, pts, w, jit, ok) => {
-    let run = [];
-    for (const p of pts) {
-      if (ok(idAt(p[0], p[1]))) run.push(p); else { lineOps(list, run, w, INK, jit); run = []; }
-    }
-    lineOps(list, run, w, INK, jit);
-  };
-  for (const f of sc.far) inkWhere(outlineOps, f.pts.filter(p => p[1] < waterY - 1), 0.7, 0.4, id => id === FAR || id === SKY);
-  for (const c of sc.crags) {
-    inkWhere(outlineOps, c.edge || c.pts.filter(p => p[1] < c.base), 1.7, 0.6, id => id === CRAG || id === SKY || id === FAR || id === WATER);
-    if (c.castle) for (const p of c.castle.parts) {
-      if (!p.window) inkWhere(outlineOps, p.pts.filter(q => q[1] <= yAt(c.pts, q[0]) + 2), 1.1, 0.25, id => id === CASTLE || id === SKY || id === CRAG);
-    }
-  }
-  const bare = id => id !== TREE && id !== LEAF && id !== ROCK;
-  for (const st of sc.structures) {
-    inkWhere(outlineOps, closed(st.pts), 1.2, 0.3, bare);
-    for (const h of st.holes || []) inkWhere(outlineOps, closed(h), 0.9, 0.2, bare);
-  }
-  if (sc.fall) inkWhere(outlineOps, sc.fall.pts.filter(q => q[1] < waterY), 0.6, 0.5, id => id === WATER || id === FAR || id === SKY);
-  inkWhere(outlineOps, sc.ground, 1.8, 0.6, id => id !== TREE && id !== LEAF);
-  for (const rk of sc.rocks) inkWhere(outlineOps, closed(rk.pts), 1.4, 0.5, id => id !== TREE && id !== LEAF);
-  for (const t of sc.trees) {
-    for (const s of t.segs) {
-      if (s[4] < 4) { lineOps(outlineOps, [[s[0], s[1]], [s[2], s[3]]], Math.max(0.7, s[4]), INK, 0.2); continue; }
-      const dx = s[2] - s[0], dy = s[3] - s[1], l = Math.hypot(dx, dy) || 1, px = -dy / l, py = dx / l;
-      for (const sg of [1, -1]) lineOps(outlineOps, [[s[0] + px * sg * s[4] / 2, s[1] + py * sg * s[4] / 2], [s[2] + px * sg * s[5] / 2, s[3] + py * sg * s[5] / 2]], 1.3, INK, 0.3);
-    }
-  }
-  ready(1, outlineOps);
-  await tick();
-  if (token.cancelled) return player;
-
   // 4. Tone map: 0 = solid ink, 1 = bare paper.
   const rays = (x, y) => {
     if (!sky.rays) return 0;
@@ -904,9 +870,9 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
             + (cragMist ? 0.35 * mist(y) : 0) + rays(x, y) * 0.35;
           break;
         }
-        case CASTLE: t = g + 0.05 * N.s2(x * 0.2, y * 0.2) + 0.15 * mist(y); break;
-        case VALLEY: t = 0.8 - 0.3 * (y - waterY) / (H - waterY) + 0.1 * N.fbmS(x * 0.005, y * 0.02, 3); break;
-        case WATER: t = y < waterY ? 0.84 + 0.25 * N.s2(x * 0.09, y * 0.004) + 0.2 * smooth(waterY - 60, waterY, y) : 0; break;
+        case CASTLE: t = g + 0.05 * N.n2(x * 0.2, y * 0.2) + 0.15 * mist(y); break;
+        case VALLEY: t = 0.8 - 0.3 * (y - waterY) / (H - waterY) + 0.1 * N.fbm(x * 0.005, y * 0.02, 3); break;
+        case WATER: t = y < waterY ? 0.66 + 0.3 * N.n2(x * 0.09, y * 0.004) + 0.2 * smooth(waterY - 60, waterY, y) : 0; break;
         case GROUND: {
           t = g + 0.2 * N.fbmS(x * 0.003, y * 0.008, 3) + 0.3 * (1 - smooth(0, 40, y - crest[x])) - 0.35 * smooth(H * 0.72, H, y);
           const dx = Math.abs(x - roadX[y]), w = roadW[y];
@@ -929,7 +895,9 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
       if (forest && id === GROUND) t += rays(x, y) * 0.5;
       const fd = Math.hypot((x - focus.x) / W, (y - focus.y) / H);
       t = t * (1 - 0.4 * smooth(0.25, 0.95, fd)) + (id === SKY ? 0 : 0.08 * Math.exp(-fd * fd / 0.02));
-      if (sc.night && !(id === SKY && sd < moonR)) t *= 0.72;
+      // Moonlight: the darks sink harder than the lights, and the sky pales in
+      // a halo round the moon, so the plate keeps its contrast.
+      if (sc.night && !(id === SKY && sd < moonR)) t = Math.pow(clamp(t), 1.5) * 0.9 + (id === SKY ? 0.55 * Math.exp(-(sd - moonR) / (moonR * 2.5)) : 0);
       tone[i] = clamp(t);
     }
     if (y % 60 === 59) { await tick(); if (token.cancelled) return player; }
@@ -958,6 +926,11 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
       }
     }
   }
+  // Pen darkness: the tone softened over a few pixels so strokes start and
+  // stop along clean shapes rather than every speck of noise, and the light
+  // end of the scale left as bare paper, as a pen draughtsman would.
+  const pen = blur(tone, 4);
+  for (let i = 0; i < pen.length; i++) pen[i] = clamp((0.88 - pen[i]) / 0.84);
   await tick();
   if (token.cancelled) return player;
 
@@ -1014,21 +987,22 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
       return Math.hypot(dx, dy) < 2 ? [1, 0.3] : [-dy / 13, dx / 16];
     },
   };
-
-  // Multi-pass crosshatching: Passes 1, 2, and 3 use curvature-adaptive angles
+  // sp: line spacing, wk: nib width, pen: stroke length range before the hand lifts.
   const groups = [
-    { id: SKY, sp: 3, wk: 1, rot: [0, 0.26, -0.22] },
-    { id: FAR, sp: 2.4, wk: 0.7, rot: [0, 0.55, -0.55] },
-    { id: CRAG, sp: 2.6, wk: 1, rot: [0, 1.25, -0.65] },
-    { id: CASTLE, sp: 2.2, wk: 0.9, rot: [0, Math.PI / 2, 0.78] },
-    { id: VALLEY, sp: 3, wk: 0.9, rot: [0, 0.4, -0.4] },
-    { id: WATER, sp: 2.5, wk: 1, rot: [0, 0.15, -0.15] },
-    { id: GROUND, sp: 3.2, wk: 0.9, rot: [0, 0.38, -0.32] },
-    { id: ROCK, sp: 2.4, wk: 1, rot: [0, 1.3, -0.7] },
-    { id: TREE, sp: 2.6, wk: 1, rot: [0, Math.PI / 2, 0.6] },
-    { id: LEAF, sp: 3, wk: 1, rot: [0, 1.15, -0.95] },
+    { id: SKY, sp: 4.2, wk: 0.75, pen: [50, 140], rot: [0, 0.6, -0.55] },
+    { id: FAR, sp: 3.6, wk: 0.55, pen: [30, 80], rot: [0, 0.7, -0.6] },
+    { id: CRAG, sp: 3.8, wk: 1, pen: [25, 70], rot: [0, 0.9, -0.7] },
+    { id: CASTLE, sp: 3.4, wk: 0.85, pen: [60, 160], rot: [0, Math.PI / 2, 0.7] },
+    { id: VALLEY, sp: 4.2, wk: 0.8, pen: [35, 90], rot: [0, 0.5, -0.5] },
+    { id: WATER, sp: 3.8, wk: 0.85, pen: [40, 120], rot: [0, 0.2, -0.2] },
+    { id: GROUND, sp: 4.4, wk: 1.1, pen: [25, 70], rot: [0, 0.6, -0.5] },
+    { id: ROCK, sp: 3.6, wk: 1.25, pen: [15, 40], rot: [0, 0.9, -0.7] },
+    { id: TREE, sp: 3.6, wk: 1.2, pen: [40, 110], rot: [0, Math.PI / 2, 0.7] },
+    { id: LEAF, sp: 4, wk: 1.1, pen: [8, 22], rot: [0, 1.1, -0.9] },
   ];
-
+  // A hatch line as a growable filled stroke; key orders neighbours side by side.
+  // Ink load: a fresh dip lays down near-black, a pen running dry goes browner.
+  const inkLoad = () => { const k = R2() * R2() * 0.9; return `rgb(${28 + 50 * k | 0},${20 + 38 * k | 0},${13 + 26 * k | 0})`; };
   const fillStroke = (run, layer) => {
     const n = run.length / 3, poly = runPoly(run);
     let len = 0;
@@ -1036,12 +1010,12 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
     let dx = run[run.length - 3] - run[0], dy = run[run.length - 2] - run[1];
     const l = Math.hypot(dx, dy) || 1;
     if (dx < 0 || (dx === 0 && dy < 0)) { dx = -dx; dy = -dy; }
-    const mx = run[(n >> 1) * 3], my = run[(n >> 1) * 3 + 1];
+    const mx = run[(n >> 1) * 3], my = run[(n >> 1) * 3 + 1], color = inkLoad();
     return {
       n, len: Math.max(1, len), layer, mx, my, key: (-dy * mx + dx * my) / l, tip: k => [run[k * 3], run[k * 3 + 1]],
       draw: (c, a, b) => {
         a = Math.max(0, a - 1);
-        c.fillStyle = INK; c.beginPath(); c.moveTo(poly[a * 2], poly[a * 2 + 1]);
+        c.fillStyle = color; c.beginPath(); c.moveTo(poly[a * 2], poly[a * 2 + 1]);
         for (let k = a + 1; k <= b; k++) c.lineTo(poly[k * 2], poly[k * 2 + 1]);
         for (let k = b; k >= a; k--) c.lineTo(poly[(2 * n - 1 - k) * 2], poly[(2 * n - 1 - k) * 2 + 1]);
         c.closePath(); c.fill();
@@ -1068,29 +1042,73 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
     return out;
   };
   const passes = [[], [], []];
-
-  // Calligraphic burin line extrusion: angle-dependent line weight + cubic Hermite entry/exit taper
+  // Run = flat [x, y, width, ...]; outline both sides. A pen stroke lands with
+  // a little pressure and thins out as the nib lifts away.
   const runPoly = run => {
     const n = run.length / 3, poly = new Float32Array(n * 4);
     const BURIN_NIB_ANGLE = Math.PI * 0.25; // 45 degree intaglio bevel
     for (let k = 0; k < n; k++) {
       const a = Math.max(0, k - 1) * 3, b = Math.min(n - 1, k + 1) * 3;
       const dx = run[b] - run[a], dy = run[b + 1] - run[a + 1], l = Math.hypot(dx, dy) || 1;
-      const strokeAng = Math.atan2(dy, dx);
-      // Calligraphic bevel factor: swells when cutting across the blade angle
-      const bevel = 0.44 + 0.56 * Math.pow(Math.sin(strokeAng - BURIN_NIB_ANGLE), 2);
-      // Smooth cubic Hermite taper at stroke start and end
-      const tk = Math.min(1, (k + 1) / 5), tn = Math.min(1, (n - k) / 5);
-      const taper = (tk * tk * (3 - 2 * tk)) * (tn * tn * (3 - 2 * tn));
-      // Subtle micro-tooth modulation along paper fibers
-      const tooth = 1 + 0.05 * Math.sin(k * 2.3 + (run[k * 3] & 7));
-      const hw = Math.max(0.12, (run[k * 3 + 2] * taper * bevel * tooth) / 2);
-      const nx = -dy / l * hw, ny = dx / l * hw;
+      const taper = Math.min(1, 0.6 + k * 0.2) * (0.3 + 0.7 * Math.min(1, (n - 1 - k) / (n * 0.4)));
+      const hw = run[k * 3 + 2] * taper / 2, nx = -dy / l * hw, ny = dx / l * hw;
       poly[k * 2] = run[k * 3] + nx; poly[k * 2 + 1] = run[k * 3 + 1] + ny;
       poly[(2 * n - 1 - k) * 2] = run[k * 3] - nx; poly[(2 * n - 1 - k) * 2 + 1] = run[k * 3 + 1] - ny;
     }
     return poly;
   };
+  // Contours as pen strokes: resampled, broken every hand's length with a
+  // small overlap, heavy where the form turns into shadow, thin in the light.
+  const contour = (list, pts, w, jit) => {
+    if (pts.length < 2) return;
+    const dense = [pts[0]];
+    for (let k = 1; k < pts.length; k++) {
+      const [x0, y0] = pts[k - 1], [x1, y1] = pts[k], m = Math.ceil(Math.hypot(x1 - x0, y1 - y0) / 4);
+      for (let j = 1; j <= m; j++) dense.push([x0 + (x1 - x0) * j / m, y0 + (y1 - y0) * j / m]);
+    }
+    let run = [], len = 0, reach = 60 + R2() * 120;
+    const q = jitter(dense, jit);
+    for (let k = 0; k < q.length; k++) {
+      const [x, y] = q[k];
+      if (run.length) len += Math.hypot(x - run[run.length - 3], y - run[run.length - 2]);
+      run.push(x, y, w * (0.7 + 0.8 * pen[clamp(y | 0, 0, H - 1) * W + clamp(x | 0, 0, W - 1)]));
+      if (len >= reach && k < q.length - 3) { list.push(fillStroke(run, 0)); run = run.slice(-6); len = 0; reach = 60 + R2() * 120; }
+    }
+    if (run.length >= 6) list.push(fillStroke(run, 0));
+  };
+  // 3. Ink outlines of the main forms, split wherever a nearer layer covers them.
+  const inkWhere = (list, pts, w, jit, ok) => {
+    let run = [];
+    for (const p of pts) {
+      if (ok(idAt(p[0], p[1]))) run.push(p); else { contour(list, run, w, jit); run = []; }
+    }
+    contour(list, run, w, jit);
+  };
+  for (const f of sc.far) inkWhere(outlineOps, f.pts.filter(p => p[1] < waterY - 1), 0.7, 0.4, id => id === FAR || id === SKY);
+  for (const c of sc.crags) {
+    inkWhere(outlineOps, c.edge || c.pts.filter(p => p[1] < c.base), 1.7, 0.6, id => id === CRAG || id === SKY || id === FAR || id === WATER);
+    if (c.castle) for (const p of c.castle.parts) {
+      if (!p.window) inkWhere(outlineOps, p.pts.filter(q => q[1] <= yAt(c.pts, q[0]) + 2), 1.1, 0.25, id => id === CASTLE || id === SKY || id === CRAG);
+    }
+  }
+  const bare = id => id !== TREE && id !== LEAF && id !== ROCK;
+  for (const st of sc.structures) {
+    inkWhere(outlineOps, closed(st.pts), 1.2, 0.3, bare);
+    for (const h of st.holes || []) inkWhere(outlineOps, closed(h), 0.9, 0.2, bare);
+  }
+  if (sc.fall) inkWhere(outlineOps, sc.fall.pts.filter(q => q[1] < waterY), 0.6, 0.5, id => id === WATER || id === FAR || id === SKY);
+  inkWhere(outlineOps, sc.ground, 1.8, 0.6, id => id !== TREE && id !== LEAF);
+  for (const rk of sc.rocks) inkWhere(outlineOps, closed(rk.pts), 1.4, 0.5, id => id !== TREE && id !== LEAF);
+  for (const t of sc.trees) {
+    for (const s of t.segs) {
+      if (s[4] < 4) { contour(outlineOps, [[s[0], s[1]], [s[2], s[3]]], Math.max(0.7, s[4]), 0.2); continue; }
+      const dx = s[2] - s[0], dy = s[3] - s[1], l = Math.hypot(dx, dy) || 1, px = -dy / l, py = dx / l;
+      for (const sg of [1, -1]) contour(outlineOps, [[s[0] + px * sg * s[4] / 2, s[1] + py * sg * s[4] / 2], [s[2] + px * sg * s[5] / 2, s[3] + py * sg * s[5] / 2]], 1.3, 0.3);
+    }
+  }
+  ready(1, outlineOps);
+  await tick();
+  if (token.cancelled) return player;
 
   const SL = root.streamlines && root.streamlines.default;
   if (!SL) throw new Error('Streamline library failed to load.');
@@ -1098,11 +1116,14 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
     const bx = box[gr.id], dir = dirs[gr.id];
     if (bx[2] < bx[0] || (gr.id === ROCK && !sc.rocks.length) || (gr.id === CRAG && !sc.crags.length)) continue;
     for (let f = 0; f < 3; f++) {
-      const [d0, d1, wmax] = BANDS[f], cr = Math.cos(gr.rot[f]), sr = Math.sin(gr.rot[f]);
+      // The hand hatches in patches: each patch gets its own slight turn, and
+      // every stroke in it lifts at the patch edge, so the ends line up.
+      const [d0, d1] = BANDS[f], P = gr.pen[1] * 0.8, salt = gr.id * 0.37 + f * 5.3;
+      const patch = (x, y) => facet(x, y, P, P * 0.8, salt)[0];
       const ok = (x, y) => {
         if (x < 0 || y < 0 || x >= W || y >= H) return -1;
         const i = (y | 0) * W + (x | 0);
-        return ids[i] === gr.id && 1 - tone[i] >= d0 ? i : -1;
+        return ids[i] === gr.id && pen[i] >= d0 ? i : -1;
       };
       const seeds = [];
       for (let y = bx[1]; y <= bx[3]; y += 9) for (let x = bx[0]; x <= bx[2]; x += 9) {
@@ -1117,7 +1138,7 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
         const job = SL({
           vectorField: p => {
             if (ok(p.x, p.y) < 0) return;
-            const [dx, dy] = dir(p.x, p.y);
+            const [dx, dy] = dir(p.x, p.y), a = gr.rot[f] + (patch(p.x, p.y) - 0.5) * 0.35, cr = Math.cos(a), sr = Math.sin(a);
             return { x: dx * cr - dy * sr, y: dx * sr + dy * cr };
           },
           boundingBox: { left: bx[0] - 2, top: bx[1] - 2, width: bx[2] - bx[0] + 4, height: bx[3] - bx[1] + 4 },
@@ -1132,13 +1153,40 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
         idle = lines.length > before ? 0 : idle + 1;
       }
       if (token.cancelled) return player;
+      // Cut each streamline into pen strokes: a hand's length, then a small lift.
+      // A stroke starts only where the tone is clearly dark enough and runs on
+      // until it is clearly too light, so light areas never crumble into specks.
+      // Each stroke bows slightly, as a wrist swings, and wavers a little.
       for (const pts of lines) {
-        let run = [];
-        const cut = () => { if (run.length >= 6) passes[f].push(fillStroke(run, gr.id)); run = []; };
-        for (const [x, y] of pts) {
-          const i = ok(x, y);
-          const w = i < 0 ? 0 : gr.sp * gr.wk * wmax * Math.pow(clamp((1 - tone[i] - d0) / (d1 - d0)), 0.9);
-          if (w >= 0.18) run.push(x, y, w); else cut();
+        // Each line reads patch edges at its own small offset, so the ends of
+        // neighbouring strokes stagger instead of ruling a seam.
+        let run = [], len = 0, gap = R2() * 6, id = -1;
+        const jx = (R2() - 0.5) * P * 0.35, jy = (R2() - 0.5) * P * 0.35;
+        const cut = (lift = true) => {
+          const n = run.length / 3;
+          if (len >= Math.min(8, gr.pen[0])) {
+            const bow = (R2() - 0.5) * 0.04 * len, o = R2() * 1000;
+            const ex = run[run.length - 3] - run[0], ey = run[run.length - 2] - run[1], el = Math.hypot(ex, ey) || 1;
+            for (let k = 0; k < n; k++) {
+              const t = k / (n - 1), off = bow * 4 * t * (1 - t) + N.n2(k * 0.05, o) * 0.35;
+              run[k * 3] += -ey / el * off; run[k * 3 + 1] += ex / el * off;
+            }
+            passes[f].push(fillStroke(run, gr.id));
+          }
+          if (run.length && lift) gap = 1.5 + R2() * 3.5;
+          run = []; len = 0;
+        };
+        for (let k = 0; k < pts.length; k++) {
+          const [x, y] = pts[k], step = k ? Math.hypot(x - pts[k - 1][0], y - pts[k - 1][1]) : 0;
+          if (gap > 0) { gap -= step; continue; }
+          const i = ok(x, y), lv = i < 0 ? -1 : (pen[i] - d0) / (d1 - d0);
+          if (lv < (run.length ? 0 : 0.1)) { cut(); continue; }
+          // A new patch starts where the last stroke ended, overlapping it.
+          const pid = patch(x + jx, y + jy);
+          if (run.length && (pid !== id || len >= gr.pen[1] * 1.3)) { const last = run.slice(-6); cut(false); run.push(...last); len = 0; }
+          id = pid;
+          if (run.length) len += step;
+          run.push(x, y, gr.wk * (0.5 + 1.6 * Math.pow(clamp(lv), 1.3)));
         }
         cut();
       }
@@ -1279,7 +1327,8 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   });
   ready(5, detailOps);
 
-  // 7. Pull the print: capillary ink pooling in acute junctions + paper grain speckle
+  // 7. Let the ink settle: where hatching is nearly solid, the wet lines run
+  // together into a black. Fades in.
   let before, after;
   printOps.push(c => {
     before = document.createElement('canvas'); before.width = W; before.height = H;
@@ -1376,9 +1425,27 @@ function facet(x, y, sx, sy, salt) {
   return [id, d1, d2, px, py];
 }
 
+// Box blur of radius r run twice (close to a gaussian), clamped at the edges.
+function blur(src, r) {
+  let a = Float32Array.from(src), b = new Float32Array(src.length);
+  for (let pass = 0; pass < 4; pass++) {
+    const horiz = pass % 2 === 0, len = horiz ? W : H, lines = horiz ? H : W;
+    for (let l = 0; l < lines; l++) {
+      const at = k => (horiz ? l * W + clamp(k, 0, W - 1) : clamp(k, 0, H - 1) * W + l);
+      let sum = 0;
+      for (let k = -r; k <= r; k++) sum += a[at(k)];
+      for (let k = 0; k < len; k++) { b[at(k)] = sum / (2 * r + 1); sum += a[at(k + r + 1)] - a[at(k - r)]; }
+    }
+    [a, b] = [b, a];
+  }
+  return a;
+}
+
+// Cheap per-pixel hash in [0, 1) for paper grain and ink speckle.
 function hash(x, y) { const s = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453; return s - Math.floor(s); }
 
-// Capillary ink bleed: ink spreads naturally at line intersections into acute crevices
+// Ink darkness is read against the blank grained paper; a 3x3 blur finds nearly
+// solid areas, where wet ink runs together. Open hatching keeps its lines.
 function inkPrint(d, p) {
   const n = W * H, D = new Float32Array(n), ink = [0x1c, 0x14, 0x0d];
   for (let i = 0; i < n; i++) D[i] = clamp((p[i * 4] - d[i * 4]) / Math.max(1, p[i * 4] - ink[0]));
@@ -1386,9 +1453,7 @@ function inkPrint(d, p) {
     const i = y * W + x;
     // 3x3 weighted convolution for dense area detection
     const b = (4 * D[i] + 2 * (D[i - 1] + D[i + 1] + D[i - W] + D[i + W]) + D[i - W - 1] + D[i - W + 1] + D[i + W - 1] + D[i + W + 1]) / 16;
-    // Capillary bleed: where crosshatch density b > 0.35, ink expands slightly into corners
-    let v = Math.max(D[i], smooth(0.38, 0.78, b));
-    if (v > 0.9 && hash(x * 0.5, y * 0.5) > 0.93) v *= 0.55;
+    const v = Math.max(D[i], smooth(0.6, 0.95, b));
     for (let ch = 0; ch < 3; ch++) d[i * 4 + ch] = p[i * 4 + ch] * (1 - v) + ink[ch] * v;
   }
 }
