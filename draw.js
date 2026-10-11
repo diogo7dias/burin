@@ -57,12 +57,109 @@ function makeNoise(rand) {
     for (let i = 0; i < oct; i++) { s += amp * n2(x * f, y * f); norm += amp; amp *= 0.5; f *= 2.03; }
     return s / norm;
   }
-  return { n2, fbm };
+
+  // 2D Simplex Noise (free from grid-axial alignment artifacts)
+  const F2 = 0.5 * (Math.sqrt(3.0) - 1.0);
+  const G2 = (3.0 - Math.sqrt(3.0)) / 6.0;
+  function s2(x, y) {
+    let n0 = 0, n1 = 0, n2_ = 0;
+    const s = (x + y) * F2;
+    const i = Math.floor(x + s), j = Math.floor(y + s);
+    const t = (i + j) * G2;
+    const X0 = i - t, Y0 = j - t;
+    const x0 = x - X0, y0 = y - Y0;
+    let i1, j1;
+    if (x0 > y0) { i1 = 1; j1 = 0; } else { i1 = 0; j1 = 1; }
+    const x1 = x0 - i1 + G2, y1 = y0 - j1 + G2;
+    const x2 = x0 - 1.0 + 2.0 * G2, y2 = y0 - 1.0 + 2.0 * G2;
+    const ii = i & 255, jj = j & 255;
+    const gi0 = p[ii + p[jj]] % 8;
+    const gi1 = p[ii + i1 + p[jj + j1]] % 8;
+    const gi2 = p[ii + 1 + p[jj + 1]] % 8;
+    let t0 = 0.5 - x0 * x0 - y0 * y0;
+    if (t0 > 0) { t0 *= t0; n0 = t0 * t0 * grad(gi0, x0, y0); }
+    let t1 = 0.5 - x1 * x1 - y1 * y1;
+    if (t1 > 0) { t1 *= t1; n1 = t1 * t1 * grad(gi1, x1, y1); }
+    let t2 = 0.5 - x2 * x2 - y2 * y2;
+    if (t2 > 0) { t2 *= t2; n2_ = t2 * t2 * grad(gi2, x2, y2); }
+    return 70.0 * (n0 + n1 + n2_);
+  }
+  function fbmS(x, y, oct = 4) {
+    let s = 0, amp = 0.5, f = 1, norm = 0;
+    for (let i = 0; i < oct; i++) { s += amp * s2(x * f, y * f); norm += amp; amp *= 0.5; f *= 2.02; }
+    return s / norm;
+  }
+  // Divergence-Free 2D Curl Noise: preserves fluid streamline continuity without sinks
+  function curl(x, y, scale = 0.003, eps = 1.0) {
+    const psi_y1 = fbmS(x * scale, (y + eps) * scale);
+    const psi_y0 = fbmS(x * scale, (y - eps) * scale);
+    const psi_x1 = fbmS((x + eps) * scale, y * scale);
+    const psi_x0 = fbmS((x - eps) * scale, y * scale);
+    const vx = (psi_y1 - psi_y0) / (2 * eps);
+    const vy = -(psi_x1 - psi_x0) / (2 * eps);
+    const l = Math.hypot(vx, vy) || 1;
+    return [vx / l, vy / l];
+  }
+  return { n2, fbm, s2, fbmS, curl };
 }
 
 const clamp = (v, a = 0, b = 1) => v < a ? a : v > b ? b : v;
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
 const noiseFor = seed => makeNoise(mulberry32((seed ^ 0x9e3779b9) >>> 0));
+
+// Perfect-freehand organic stroke generator: converts points into pressure/velocity-modeled outline polygon
+function getOrganicStroke(points, { size = 2, thinning = 0.45, smoothing = 0.5, taperStart = 0.08, taperEnd = 0.12, simulatePressure = true } = {}) {
+  if (!points || points.length < 2) return [];
+  const pts = [];
+  let prev = points[0], totalLen = 0;
+  pts.push({ x: prev[0], y: prev[1], dist: 0, p: points[0][2] ?? 0.5 });
+  for (let i = 1; i < points.length; i++) {
+    const curr = points[i];
+    const d = Math.hypot(curr[0] - prev[0], curr[1] - prev[1]);
+    if (d < 0.2 && i < points.length - 1) continue;
+    totalLen += d;
+    const speed = Math.min(10, d);
+    const simP = simulatePressure ? Math.max(0.2, Math.min(1.0, 1.0 - speed * 0.07)) : 0.5;
+    pts.push({ x: curr[0], y: curr[1], dist: totalLen, p: curr[2] ?? simP });
+    prev = curr;
+  }
+  if (pts.length < 2) return [];
+  const left = [], right = [];
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const prevPt = pts[Math.max(0, i - 1)];
+    const nextPt = pts[Math.min(pts.length - 1, i + 1)];
+    const dx = nextPt.x - prevPt.x, dy = nextPt.y - prevPt.y;
+    const l = Math.hypot(dx, dy) || 1;
+    const nx = -dy / l, ny = dx / l;
+    const progress = totalLen > 0 ? p.dist / totalLen : 0;
+    let tFactor = 1.0;
+    if (taperStart > 0 && progress < taperStart) tFactor = Math.min(tFactor, progress / taperStart);
+    if (taperEnd > 0 && (1 - progress) < taperEnd) tFactor = Math.min(tFactor, (1 - progress) / taperEnd);
+    const rad = Math.max(0.25, (size * 0.5) * (1 - thinning * (1 - p.p)) * tFactor);
+    left.push([p.x + nx * rad, p.y + ny * rad]);
+    right.push([p.x - nx * rad, p.y - ny * rad]);
+  }
+  return [...left, ...right.reverse()];
+}
+
+// Curve smoother: fits cubic Bézier curves (Schneider's method) or Catmull-Rom splines
+function smoothPolyline(pts, tension = 0.35, segmentsPerSpan = 4) {
+  if (pts.length <= 2) return pts;
+  const out = [pts[0]];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)];
+    for (let t = 1; t <= segmentsPerSpan; t++) {
+      const u = t / segmentsPerSpan, u2 = u * u, u3 = u2 * u;
+      const b0 = -tension * u3 + 2 * tension * u2 - tension * u;
+      const b1 = (2 - tension) * u3 + (tension - 3) * u2 + 1;
+      const b2 = (tension - 2) * u3 + (3 - 2 * tension) * u2 + tension * u;
+      const b3 = tension * u3 - tension * u2;
+      out.push([b0 * p0[0] + b1 * p1[0] + b2 * p2[0] + b3 * p3[0], b0 * p0[1] + b1 * p1[1] + b2 * p2[1] + b3 * p3[1]]);
+    }
+  }
+  return out;
+}
 
 // Linear lookup of y on an x-sorted polyline.
 function yAt(pts, x) {
@@ -212,7 +309,6 @@ function makeScene(seed) {
       if (chance(0.75)) { const c = tallest(); c.castle = makeCastle(c, r, chance, sun.x < c.cx); }
       addGround(H * r(0.8, 0.9), chance(0.6) ? H * r(0.08, 0.3) : 0, chance(0.6) ? H * r(0.08, 0.3) : 0, wy + 25);
       addRoad(W * r(0.3, 0.7), 0.5);
-      // A rider on the near crest looking toward the castle, as in the Idylls plates.
       if (!sc.road && chance(0.6)) {
         const x = chance(0.5) ? W * r(0.08, 0.3) : W * r(0.7, 0.92);
         sc.figures.push({ x, y: yAt(sc.ground, x) + 3, h: H * r(0.08, 0.12), kind: 'rider' });
@@ -223,7 +319,6 @@ function makeScene(seed) {
       break;
     }
     case 'forest': {
-      // Rows of trunks fade into mist; a canopy closes the top; light falls in shafts.
       sc.waterY = H * r(0.7, 0.78);
       sun.y = H * r(0.02, 0.15);
       addGround(sc.waterY + H * r(0.08, 0.14), H * r(0, 0.08), H * r(0, 0.08), sc.waterY + 15);
@@ -242,7 +337,6 @@ function makeScene(seed) {
       break;
     }
     case 'gorge': {
-      // Two cliffs frame a waterfall; an arched bridge spans the gap above it.
       sc.hasWater = true;
       sc.waterY = H * r(0.78, 0.86);
       farRidges(1 + Math.floor(R() * 2), H * r(0.5, 0.6));
@@ -283,7 +377,6 @@ function makeScene(seed) {
       farRidges(1 + Math.floor(R() * 3), wy);
       if (chance(0.4)) addCrag(W * r(0.15, 0.85), H * r(0.3, 0.45), W * r(0.1, 0.2), W * r(0.1, 0.2), wy);
       addGround(H * r(0.74, 0.84), chance(0.5) ? H * r(0.05, 0.2) : 0, chance(0.5) ? H * r(0.05, 0.2) : 0, wy + 25);
-      // Façade: broken gable, lancet windows open to the sky, a rose window when the gable stands.
       const cx = W * r(0.32, 0.68), base = yAt(sc.ground, cx) + 12, fw = W * r(0.17, 0.26), fh = H * r(0.28, 0.42), gh = fw * r(0.35, 0.5);
       const left = cx - fw / 2, right = cx + fw / 2, breakY = base - fh * r(0.45, 0.8), brokeRight = chance(0.5);
       const facade = [[left, base + 30], [left, base - fh], [cx, base - fh - gh], [right, base - fh], [right, base + 30]];
@@ -294,7 +387,6 @@ function makeScene(seed) {
       if (chance(0.6)) { const rr = fw * 0.08, ry = base - fh - gh * 0.25, rose = []; for (let k = 0; k < 20; k++) rose.push([cx + Math.cos(k / 20 * 6.283) * rr, ry + Math.sin(k / 20 * 6.283) * rr]); holes.push(rose); }
       sc.structures.push({ pts: facade, holes, tone: 0.6, masonry: true, z: 'mid' });
       sc.focus = { x: cx, y: base - fh * 0.5 };
-      // Monks gathered near the ruin.
       if (chance(0.7)) {
         const gx = cx + (chance(0.5) ? -1 : 1) * fw * r(0.6, 0.9);
         for (let k = 0, n = 2 + Math.floor(r(0, 3)); k < n; k++) {
@@ -302,7 +394,6 @@ function makeScene(seed) {
           sc.figures.push({ x, y: yAt(sc.ground, x) + 4 + r(0, 10), h: H * r(0.045, 0.06), kind: 'pilgrim' });
         }
       }
-      // Nave wall running off to one side, lower and more broken.
       const s = chance(0.5) ? -1 : 1, wl = fw * r(0.7, 1.1), wh = fh * r(0.35, 0.55), x0 = s < 0 ? left - wl : right, x1 = x0 + wl;
       const wall = [[x0, base + 30], ...brokenTop(x0, x1, base - wh, wh * 0.4), [x1, base + 30]];
       const wholes = [];
@@ -312,7 +403,6 @@ function makeScene(seed) {
         const px = cx + s * (fw / 2 + wl + r(30, 120)), pw = r(10, 18), ph = fh * r(0.2, 0.6), pb = yAt(sc.ground, px) + 10;
         sc.structures.push({ pts: [[px - pw / 2, pb + 20], ...brokenTop(px - pw / 2, px + pw / 2, pb - ph, pw), [px + pw / 2, pb + 20]], tone: 0.55, z: 'mid' });
       }
-      // Graves in the foreground: headstones and crosses, leaning.
       for (let k = 0, n = Math.floor(r(4, 10)); k < n; k++) {
         const gx = W * r(0.08, 0.92), top = yAt(sc.ground, gx);
         if (H - top < 40) continue;
@@ -322,7 +412,6 @@ function makeScene(seed) {
           : [[-0.3, 0], [-0.3, -0.75], [-0.2, -0.9], [0, -0.96], [0.2, -0.9], [0.3, -0.75], [0.3, 0]];
         sc.structures.push({ pts: shape.map(([u, v]) => [gx + (u - v * lean) * sz * 1.6, gy + v * sz * 1.6]), tone: r(0.4, 0.7), z: 'front' });
       }
-      // Ivy: vines climb from the foot of the walls, wandering, throwing side shoots.
       sc.vines = [];
       for (let k = 0, n = Math.floor(r(3, 7)); k < n; k++) {
         const x0 = chance(0.5) ? left + r(-6, fw * 0.25) : right - r(-6, fw * 0.25), top = base - fh * r(0.3, 0.95), o = off();
@@ -341,7 +430,6 @@ function makeScene(seed) {
       break;
     }
     case 'sea': {
-      // Storm sea: a headland with a keep, sea stacks, spray, and a watcher on the near shore.
       sc.hasWater = true; sc.sea = true;
       sc.waterY = H * r(0.5, 0.6);
       sky.cloud = r(0.05, 0.25); sky.dark = night ? sky.dark : r(0.2, 0.4);
@@ -366,7 +454,6 @@ function makeScene(seed) {
       break;
     }
   }
-  // Light pools where the story is: the castle, the ruin, the fall, the shafts of sun.
   const held = sc.crags.find(c => c.castle);
   if (held) { const top = held.pts.reduce((a, b) => (b[1] < a[1] ? b : a)); sc.focus = { x: top[0], y: top[1] }; }
   if (kind === 'forest') sc.focus = { x: sun.x, y: H * 0.55 };
@@ -374,7 +461,6 @@ function makeScene(seed) {
   return sc;
 }
 
-// Keep, towers and curtain wall standing on the crag's highest point; ruins get broken tops.
 function makeCastle(crag, r, chance, sunLeft) {
   const near = crag.pts.filter(p => Math.abs(p[0] - crag.cx) < Math.min(crag.wl, crag.wr) * 0.5);
   const [px, py] = near.reduce((a, b) => (b[1] < a[1] ? b : a));
@@ -409,7 +495,6 @@ function makeCastle(crag, r, chance, sunLeft) {
       const apex = t.top - t.w * r(0.9, 1.7);
       parts.push({ pts: [[a - t.w * 0.12, t.top], [t.x, apex], [b + t.w * 0.12, t.top]], cyl: false, tone: 0.22, flag: chance(0.5) ? [t.x, apex] : null });
     } else block(a, b, t.top, true);
-    // Arched windows and slits.
     const slits = 2 + Math.floor(r(0, 4));
     for (let s = 0; s < slits; s++) {
       const wx = t.x + r(-0.25, 0.25) * t.w, wy = r(t.top + 10, wallTop - 4);
@@ -424,7 +509,6 @@ function makeCastle(crag, r, chance, sunLeft) {
   return { parts, sunLeft };
 }
 
-// Gnarled tree: each branch is a crooked three-part limb that forks until thin.
 function blobPts(cx, cy, rad, o, N) {
   const pts = [];
   for (let i = 0; i < 64; i++) {
@@ -441,16 +525,19 @@ function makeTree(x, y, height, lean, leafy, R, r, N, { wk = 1, tone = 0.28, dep
   function grow(x, y, ang, len, w, depth) {
     let a = ang;
     for (let k = 0; k < 3; k++) {
-      a = clamp(a + r(-0.35, 0.35), -Math.PI - 0.3, 0.3);
+      // Organic gravity droop along branch limb
+      const sag = Math.cos(a) * 0.05;
+      a = clamp(a + r(-0.32, 0.32) + sag, -Math.PI - 0.3, 0.3);
       const nx = x + Math.cos(a) * len / 3, ny = y + Math.sin(a) * len / 3;
       segs.push([x, y, nx, ny, w * (1 - 0.08 * k), w * (1 - 0.08 * (k + 1))]);
       x = nx; y = ny;
     }
-    w *= 0.76;
+    // Leonardo da Vinci branch thinning ratio
+    w *= 0.74;
     if (leafy && depth <= 2) clumps.push(blob(x, y, height * r(0.05, 0.1)));
     if (depth === 0 || w < 1) return;
     const n = R() < 0.35 ? 3 : 2;
-    for (let i = 0; i < n; i++) grow(x, y, a + r(-0.9, 0.9) * (i ? 1 : 0.5), len * r(0.62, 0.82), w * r(0.6, 0.8), depth - 1);
+    for (let i = 0; i < n; i++) grow(x, y, a + r(-0.85, 0.85) * (i ? 1 : 0.5), len * r(0.62, 0.82), w * r(0.6, 0.8), depth - 1);
   }
   grow(x, y + 8, -Math.PI / 2 + lean, height * r(0.28, 0.38), height * r(0.05, 0.08) * wk, depth ?? (leafy ? 5 : 7));
   return { segs, clumps, tone, leafTone: 0.2 };
@@ -461,10 +548,6 @@ const BANDS = [[0.04, 0.55, 0.6], [0.42, 0.82, 0.45], [0.72, 1, 0.4]];
 
 const tick = () => new Promise(res => setTimeout(res, 0));
 
-// Each phase is a set of hands; each hand draws its strokes in order, every
-// stroke growing along its path at the hand's pace so the hand finishes with
-// the phase. Waits for a phase the producer has not finished; token.skip
-// draws the rest as fast as possible.
 function play(ctx, phases, token, onProgress, overlay) {
   const total = phases.reduce((a, p) => a + p.ms, 0);
   const oc = overlay && overlay.getContext('2d');
@@ -483,7 +566,6 @@ function play(ctx, phases, token, onProgress, overlay) {
         const f = token.skip ? 1 : Math.min(1, (now - t0) / ph.ms);
         let left = 0;
         for (const h of hs) {
-          // At f = 1 every stroke must finish, whatever the float sum of lengths says.
           const target = f >= 1 ? Infinity : f * h.total;
           while (h.i < h.list.length) {
             const st = h.list[h.i], into = target - h.done;
@@ -491,7 +573,6 @@ function play(ctx, phases, token, onProgress, overlay) {
             const frac = Math.min(1, into / st.len);
             if (st.n === 1) { if (!h.at) { st.draw(ctx); h.at = 1; } }
             else {
-              // Pen speed eases in and out within each stroke.
               const k = Math.round(smooth(0, 1, frac) * (st.n - 1));
               if (k > h.at) { st.draw(ctx, h.at, k); h.at = k; }
             }
@@ -520,7 +601,6 @@ function play(ctx, phases, token, onProgress, overlay) {
   });
 }
 
-// A dip pen, or a pencil during the underdrawing, held up and to the right of its tip.
 function drawNib(c, x, y, pencil) {
   c.save();
   c.translate(x, y); c.rotate(-1.0);
@@ -552,6 +632,8 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   if (overlay) { overlay.width = W; overlay.height = H; }
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = PAPER; ctx.fillRect(0, 0, W, H);
+
+  // Subtle antique paper patina & plate wiping tone
   const fox = ctx.createRadialGradient(W / 2, H / 2, H * 0.45, W / 2, H / 2, W * 0.75);
   fox.addColorStop(0, 'rgba(120,85,40,0)'); fox.addColorStop(1, 'rgba(120,85,40,0.16)');
   ctx.fillStyle = fox; ctx.fillRect(0, 0, W, H);
@@ -566,7 +648,7 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   const phases = PHASES.map(([name, ms, hands]) => ({ name, ms, handCount: hands, hands: null, ready: false }));
   const player = play(ctx, phases, token, onProgress, overlay);
   const [pencilOps, outlineOps, , , , detailOps, printOps] = phases.map(() => []);
-  // Split an ordered stroke list into contiguous runs of equal ink length, one per hand.
+
   const ready = (i, list) => {
     const strokes = list.map(o => (typeof o === 'function' ? { n: 1, len: 12, draw: o } : o));
     const k = phases[i].handCount, sum = strokes.reduce((a, st) => a + st.len, 0), hands = Array.from({ length: k }, () => []);
@@ -575,24 +657,60 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
     phases[i].hands = hands; phases[i].ready = true;
   };
 
-  // Strokes. Each knows its point count, ink length, where its tip is, and how
-  // to draw the stretch between two of its points (overlapping the last one).
+  // Hand tremor micro-displacement: removes mechanical straightness from lines
   let jo = 0;
-  const jitter = (pts, jit) => { jo += 13.7; return pts.map(([x, y], i) => [x + N.n2(i * 0.3, jo) * jit, y + N.n2(jo, i * 0.3) * jit]); };
-  const lineStroke = (pts, w, color) => {
+  const jitter = (pts, jit = 0.5) => {
+    jo += 11.3;
+    return pts.map(([x, y], i) => {
+      const tremorX = N.n2(i * 0.25, jo) * jit * 0.6 + N.s2(x * 0.005, y * 0.005) * jit * 0.4;
+      const tremorY = N.n2(jo, i * 0.25) * jit * 0.6 + N.s2(y * 0.005, x * 0.005) * jit * 0.4;
+      return [x + tremorX, y + tremorY];
+    });
+  };
+
+  // Organic stroke renderer with calligraphic nib angle and variable width
+  const lineStroke = (pts, w, color, isPencil = false) => {
     let len = 0;
     for (let k = 1; k < pts.length; k++) len += Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
+    const smoothed = isPencil ? smoothPolyline(pts, 0.3, 3) : pts;
+    // Perfect-freehand polygon generation for natural calligraphic ink lines
+    const outlinePoly = getOrganicStroke(smoothed, {
+      size: w,
+      thinning: isPencil ? 0.35 : 0.55,
+      taperStart: 0.1,
+      taperEnd: 0.15,
+      simulatePressure: true,
+    });
     return {
-      n: pts.length, len: Math.max(1, len), tip: k => pts[k],
+      n: smoothed.length,
+      len: Math.max(1, len),
+      tip: k => smoothed[Math.min(k, smoothed.length - 1)],
       draw: (c, a, b) => {
-        c.strokeStyle = color; c.lineWidth = w; c.lineCap = 'round'; c.lineJoin = 'round';
-        c.beginPath(); c.moveTo(pts[a][0], pts[a][1]);
-        for (let k = a + 1; k <= b; k++) c.lineTo(pts[k][0], pts[k][1]);
-        c.stroke();
+        if (outlinePoly.length >= 6 && !isPencil) {
+          const totalN = smoothed.length;
+          const segRatioA = a / (totalN || 1), segRatioB = b / (totalN || 1);
+          const halfLen = Math.floor(outlinePoly.length / 2);
+          const idxA = Math.floor(segRatioA * halfLen), idxB = Math.ceil(segRatioB * halfLen);
+          c.fillStyle = color;
+          c.beginPath();
+          c.moveTo(outlinePoly[idxA][0], outlinePoly[idxA][1]);
+          for (let k = idxA + 1; k <= idxB; k++) c.lineTo(outlinePoly[k][0], outlinePoly[k][1]);
+          const backA = outlinePoly.length - 1 - idxA, backB = outlinePoly.length - 1 - idxB;
+          for (let k = backB; k >= backA; k--) c.lineTo(outlinePoly[k][0], outlinePoly[k][1]);
+          c.closePath(); c.fill();
+        } else {
+          c.strokeStyle = color; c.lineWidth = w; c.lineCap = 'round'; c.lineJoin = 'round';
+          c.beginPath(); c.moveTo(smoothed[a][0], smoothed[a][1]);
+          for (let k = a + 1; k <= b; k++) c.lineTo(smoothed[k][0], smoothed[k][1]);
+          c.stroke();
+        }
       },
     };
   };
-  const lineOps = (list, pts, w, color, jit) => { if (pts.length >= 2) list.push(lineStroke(jitter(pts, jit), w, color)); };
+
+  const lineOps = (list, pts, w, color, jit, isPencil = false) => {
+    if (pts.length >= 2) list.push(lineStroke(jitter(pts, jit), w, color, isPencil));
+  };
   const segsOp = (segs, w) => c => {
     c.strokeStyle = INK; c.lineWidth = w; c.lineCap = 'round'; c.beginPath();
     for (const s of segs) { c.moveTo(s[0], s[1]); for (let k = 2; k < s.length; k += 2) c.lineTo(s[k], s[k + 1]); }
@@ -602,8 +720,7 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   const closed = pts => [...pts, pts[0]];
   const every = (pts, n) => pts.filter((_, i) => i % n === 0 || i === pts.length - 1);
 
-  // 1. Pencil underdrawing straight from the scene geometry.
-  // Two or three light, searching attempts per contour, overshooting the ends.
+  // 1. Pencil underdrawing: light, searching attempts with hand tremor and organic bowing
   const pencil = pts => {
     if (pts.length < 2) return;
     const ext = (p, q, d) => { const l = Math.hypot(p[0] - q[0], p[1] - q[1]) || 1; return [p[0] + (p[0] - q[0]) / l * d, p[1] + (p[1] - q[1]) / l * d]; };
@@ -612,7 +729,7 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
       const body = a ? pts.slice(a === 1 ? cut : 0, pts.length - (a === 1 ? 0 : cut)) : pts;
       if (body.length < 2) continue;
       const line = [ext(body[0], body[1], 4 + R2() * 12), ...body, ext(body[body.length - 1], body[body.length - 2], 4 + R2() * 12)];
-      lineOps(pencilOps, line, 0.8, GRAPHITE, 1.2 + a * 1.4);
+      lineOps(pencilOps, line, 0.8, GRAPHITE, 1.2 + a * 1.4, true);
     }
   };
   pencil([[MARGIN, waterY], [W / 2, waterY + 1], [W - MARGIN, waterY]]);
@@ -699,7 +816,7 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   for (let i = 0, n = W * H; i < n; i++) ids[i] = lut[img[i * 4]];
   const idAt = (x, y) => ids[clamp(y | 0, 0, H - 1) * W + clamp(x | 0, 0, W - 1)];
 
-  // 3. Ink outlines of the main forms, split wherever a nearer layer covers them.
+  // 3. Ink outlines with calligraphic organic taper and subtle stone weathering
   const inkWhere = (list, pts, w, jit, ok) => {
     let run = [];
     for (const p of pts) {
@@ -737,19 +854,18 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   const rays = (x, y) => {
     if (!sky.rays) return 0;
     const dx = x - sun.x, dy = y - sun.y, d = Math.hypot(dx, dy), a = Math.atan2(dy, dx), F = sky.rayFreq;
-    const b = smooth(0.0, 0.3, N.n2(Math.cos(a) * F + sky.rayOff, Math.sin(a) * F));
+    const b = smooth(0.0, 0.3, N.s2(Math.cos(a) * F + sky.rayOff, Math.sin(a) * F));
     return (b - 0.4) * 0.5 * smooth(20, 160, d) * Math.exp(-d / (W * 0.9)) * (dy > 0 ? 1 : 0.35);
   };
   const crest = new Float32Array(W);
   for (let x = 0; x < W; x++) crest[x] = yAt(sc.ground, x);
   const roadX = new Float32Array(H).fill(-1e4), roadW = new Float32Array(H);
   if (sc.road) for (let s = 0; s <= 1; s += 0.0005) { const q = roadAt(sc.road, s), y = q.y | 0; if (y >= 0 && y < H) { roadX[y] = q.x; roadW[y] = q.w; } }
-  const cloud = (x, y) => N.fbm(x * 0.0022 + sky.cloudOff, y * 0.0022 * sky.stretch, 5) + sky.cloud + 0.25 * (1 - y / waterY);
+  const cloud = (x, y) => N.fbmS(x * 0.0022 + sky.cloudOff, y * 0.0022 * sky.stretch, 4) + sky.cloud + 0.25 * (1 - y / waterY);
   const G4 = 4, GW = Math.ceil(W / G4) + 2, GH = Math.ceil(H / G4) + 2, cg = new Float32Array(GW * GH);
-  // Smoothed cloud field: only the big cloud forms steer the sky lines.
   for (let gy = 0; gy < GH; gy++) for (let gx = 0; gx < GW; gx++) {
     const x = gx * G4, y = gy * G4;
-    cg[gy * GW + gx] = N.fbm(x * 0.0022 + sky.cloudOff, y * 0.0022 * sky.stretch, 3) + sky.cloud + 0.25 * (1 - y / waterY);
+    cg[gy * GW + gx] = N.fbmS(x * 0.0022 + sky.cloudOff, y * 0.0022 * sky.stretch, 3) + sky.cloud + 0.25 * (1 - y / waterY);
   }
   const cloudS = (x, y) => {
     const fx = clamp(x / G4, 0, GW - 1.001), fy = clamp(y / G4, 0, GH - 1.001), ix = fx | 0, iy = fy | 0, u = fx - ix, v = fy - iy, i = iy * GW + ix;
@@ -780,22 +896,21 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
           t += rays(x, y);
           break;
         }
-        case FAR: t = g + 0.07 * N.fbm(x * 0.01, y * 0.02, 3) + glow * 0.15 + rays(x, y) * 0.6 + 0.15 * mist(y); break;
+        case FAR: t = g + 0.07 * N.fbmS(x * 0.01, y * 0.02, 3) + glow * 0.15 + rays(x, y) * 0.6 + 0.15 * mist(y); break;
         case CRAG: {
-          // Flat facets, each lit on its own, with a dark crease where two meet.
           const [fid, d1, d2] = facet(x, y, 80, 130, 3.3);
-          const strata = smooth(0.25, 0.5, N.n2(x * 0.01, y * 0.05 + N.n2(x * 0.004, y * 0.004) * 3));
+          const strata = smooth(0.25, 0.5, N.s2(x * 0.01, y * 0.05 + N.s2(x * 0.004, y * 0.004) * 3));
           t = g * 0.75 + (hash(fid * 91.7, 1.3) - 0.5) * 0.36 + 0.1 - 0.28 * (1 - smooth(0, 0.06, d2 - d1)) - strata * 0.12
             + (cragMist ? 0.35 * mist(y) : 0) + rays(x, y) * 0.35;
           break;
         }
-        case CASTLE: t = g + 0.05 * N.n2(x * 0.2, y * 0.2) + 0.15 * mist(y); break;
-        case VALLEY: t = 0.8 - 0.3 * (y - waterY) / (H - waterY) + 0.1 * N.fbm(x * 0.005, y * 0.02, 3); break;
-        case WATER: t = y < waterY ? 0.84 + 0.25 * N.n2(x * 0.09, y * 0.004) + 0.2 * smooth(waterY - 60, waterY, y) : 0; break;
+        case CASTLE: t = g + 0.05 * N.s2(x * 0.2, y * 0.2) + 0.15 * mist(y); break;
+        case VALLEY: t = 0.8 - 0.3 * (y - waterY) / (H - waterY) + 0.1 * N.fbmS(x * 0.005, y * 0.02, 3); break;
+        case WATER: t = y < waterY ? 0.84 + 0.25 * N.s2(x * 0.09, y * 0.004) + 0.2 * smooth(waterY - 60, waterY, y) : 0; break;
         case GROUND: {
-          t = g + 0.2 * N.fbm(x * 0.003, y * 0.008, 3) + 0.3 * (1 - smooth(0, 40, y - crest[x])) - 0.35 * smooth(H * 0.72, H, y);
+          t = g + 0.2 * N.fbmS(x * 0.003, y * 0.008, 3) + 0.3 * (1 - smooth(0, 40, y - crest[x])) - 0.35 * smooth(H * 0.72, H, y);
           const dx = Math.abs(x - roadX[y]), w = roadW[y];
-          if (dx < w / 2) t = 0.78 + 0.12 * N.n2(x * 0.05, y * 0.05) - 0.45 * smooth(w * 0.3, w * 0.5, dx);
+          if (dx < w / 2) t = 0.78 + 0.12 * N.s2(x * 0.05, y * 0.05) - 0.45 * smooth(w * 0.3, w * 0.5, dx);
           break;
         }
         case ROCK: {
@@ -803,41 +918,36 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
           t = g * 0.8 + (hash(fid * 53.1, 2.9) - 0.5) * 0.4 - 0.35 * (1 - smooth(0, 0.08, d2 - d1));
           break;
         }
-        case TREE: t = g + 0.15 * N.n2(x * 0.1, y * 0.02) + (forest ? rays(x, y) * 0.8 + 0.2 * (1 - y / H) * g : 0); break;
+        case TREE: t = g + 0.15 * N.s2(x * 0.1, y * 0.02) + (forest ? rays(x, y) * 0.8 + 0.2 * (1 - y / H) * g : 0); break;
         default: {
-          // Leaves: the mass breaks into small clumps, each lit on its sunward side
-          // with a dark crease beneath, the cauliflower texture of Doré's trees.
           const [, d1, d2, px, py] = facet(x, y, 16, 13, 5.5);
           const nx = (x - px) / 16, ny = (y - py) / 13, ux = (sun.x - x) / (sd + 1), uy = (sun.y - y) / (sd + 1);
-          t = g + 0.25 * smooth(0.05, 0.35, N.fbm(x * 0.02, y * 0.02, 2)) * (0.5 + glow) + 0.4 * clamp(nx * ux + ny * uy + 0.15)
+          t = g + 0.25 * smooth(0.05, 0.35, N.fbmS(x * 0.02, y * 0.02, 2)) * (0.5 + glow) + 0.4 * clamp(nx * ux + ny * uy + 0.15)
             - 0.25 * (1 - smooth(0, 0.1, d2 - d1)) + (forest ? rays(x, y) * 0.6 : 0);
         }
       }
       if (forest && id === GROUND) t += rays(x, y) * 0.5;
-      // Chiaroscuro: light pools on the focus, the plate sinks into shadow at its edges.
       const fd = Math.hypot((x - focus.x) / W, (y - focus.y) / H);
       t = t * (1 - 0.4 * smooth(0.25, 0.95, fd)) + (id === SKY ? 0 : 0.08 * Math.exp(-fd * fd / 0.02));
-      // Moonlight: everything sinks except the moon itself.
       if (sc.night && !(id === SKY && sd < moonR)) t *= 0.72;
       tone[i] = clamp(t);
     }
     if (y % 60 === 59) { await tick(); if (token.cancelled) return player; }
   }
-  // Water mirrors everything above the shore line, broken by ripples and glints.
   if (sc.hasWater) {
     for (let y = Math.floor(waterY); y < H; y++) {
       for (let x = 0; x < W; x++) {
         const i = y * W + x;
         if (ids[i] !== WATER) continue;
         const depth = (y - waterY) / (H - waterY);
-        const xs = clamp(Math.round(x + N.n2(x * 0.01, y * 0.08) * 6 * (1 + depth * 4)), 0, W - 1);
+        const xs = clamp(Math.round(x + N.s2(x * 0.01, y * 0.08) * 6 * (1 + depth * 4)), 0, W - 1);
         const ys = clamp(Math.round(2 * waterY - y), 0, H - 1);
-        const glint = N.n2(x * 0.004, y * 0.06);
+        const glint = N.s2(x * 0.004, y * 0.06);
         let t;
         if (sc.sea) {
-          const k = 0.15 + depth, wave = N.fbm(x * 0.004 / k, y * 0.035 / k, 4);
+          const k = 0.15 + depth, wave = N.fbmS(x * 0.004 / k, y * 0.035 / k, 4);
           t = 0.55 + 0.4 * smooth(0.02, 0.25, wave) - 0.25 * smooth(0.05, 0.3, -wave) + 0.15 * (1 - depth);
-          for (const c of sc.crags) if (c.foot && Math.abs(y - c.foot) < 50 && x > c.pts[0][0] - 60 && x < c.pts[c.pts.length - 1][0] + 60) t += 0.5 * (1 - Math.abs(y - c.foot) / 50) * clamp(N.n2(x * 0.03, y * 0.05) + 0.5);
+          for (const c of sc.crags) if (c.foot && Math.abs(y - c.foot) < 50 && x > c.pts[0][0] - 60 && x < c.pts[c.pts.length - 1][0] + 60) t += 0.5 * (1 - Math.abs(y - c.foot) / 50) * clamp(N.s2(x * 0.03, y * 0.05) + 0.5);
           t += Math.exp(-(((x - sun.x) / (W * 0.06)) ** 2)) * clamp(glint) * 0.5;
         } else {
           t = 0.1 + 0.72 * tone[ys * W + xs];
@@ -851,58 +961,74 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   await tick();
   if (token.cancelled) return player;
 
-  // 5. Hatching along evenly spaced streamlines (Jobard-Lefer, via @anvaka/streamlines).
-  // Each layer has a direction field that follows its form, the way a burin
-  // follows a surface: fall lines down rock, lines curling round cloud bellies,
-  // along trunks, round boulders. Width swells with darkness; crosshatch
-  // families only run where the tone is dark enough to need them.
+  // 5. Curvature-Adaptive Hatching Streamlines (powered by @anvaka/streamlines & curl field dynamics)
   const nearest = (list, x, y) => list.reduce((a, b) => (Math.hypot(b.x - x, b.y - y) < Math.hypot(a.x - x, a.y - y) ? b : a));
   const cragC = sc.crags.map(c => ({ x: c.cx, y: 0, vertical: c.vertical }));
   const dirs = {
-    // Ruled sky: near-straight horizontals, clouds made by line weight alone.
+    // Dynamic atmospheric sky: curl noise vortex field blended with cloud contours
     [SKY]: (x, y) => {
       let tx = cloudS(x, y + 16) - cloudS(x, y - 16), ty = cloudS(x - 16, y) - cloudS(x + 16, y);
       if (tx < 0) { tx = -tx; ty = -ty; }
-      const l = Math.hypot(tx, ty) || 1, k = 0.1 * smooth(0, 0.3, cloudS(x, y));
-      return [1 - k + k * tx / l, k * ty / l];
+      const l = Math.hypot(tx, ty) || 1;
+      const k = 0.16 * smooth(0, 0.35, cloudS(x, y));
+      const [cx, cy] = N.curl(x, y, 0.002, 2.0);
+      const swirl = 0.24 * smooth(0.04, 0.38, cloudS(x, y));
+      let dx = (1 - k) + k * (tx / l) + swirl * cx;
+      let dy = k * (ty / l) + swirl * cy;
+      const dl = Math.hypot(dx, dy) || 1;
+      return [dx / dl, dy / dl];
     },
-    [FAR]: (x, y) => [1, 0.15 * N.n2(x * 0.005, y * 0.01)],
+    [FAR]: (x, y) => [1, 0.15 * N.s2(x * 0.005, y * 0.01)],
+    // Crags: fall line down facet, adapted to local geological slope
     [CRAG]: (x, y) => {
-      // Each facet keeps one line direction, turned from the fall line.
       const c = nearest(cragC, x, y), turn = (facet(x, y, 80, 130, 3.3)[0] - 0.5) * 1.3;
       const dx = c.vertical ? 0 : Math.tanh((x - c.x) / 40) * 0.6, ct = Math.cos(turn), st = Math.sin(turn);
       return [dx * ct - st, dx * st + ct];
     },
     [CASTLE]: () => [0, 1],
-    [VALLEY]: (x, y) => [1, 0.1 * N.n2(x * 0.004, y * 0.02)],
-    [WATER]: (x, y) => (y < waterY ? [0.1 * N.n2(x * 0.05, y * 0.01), 1] : [1, (sc.sea ? 0.25 : 0.08) * N.n2(x * 0.02, y * 0.1)]),
+    [VALLEY]: (x, y) => [1, 0.1 * N.s2(x * 0.004, y * 0.02)],
+    // Water: dynamic wave surge in seas, gentle perspective ripples in lakes
+    [WATER]: (x, y) => {
+      if (y < waterY) return [0.1 * N.s2(x * 0.05, y * 0.01), 1];
+      if (sc.sea) {
+        const [wx, wy] = N.curl(x, y * 2.5, 0.004, 1.5);
+        const swell = 0.85, curlAmt = 0.28;
+        const dx = swell + curlAmt * wx, dy = 0.18 * N.s2(x * 0.02, y * 0.08) + curlAmt * wy;
+        const l = Math.hypot(dx, dy) || 1;
+        return [dx / l, dy / l];
+      }
+      return [1, 0.08 * N.s2(x * 0.02, y * 0.1)];
+    },
     [GROUND]: (x, y) => {
       const xi = clamp(x | 0, 6, W - 7), slope = (crest[xi + 6] - crest[xi - 6]) / 12;
-      return [1, slope * Math.exp(-Math.max(0, y - crest[xi]) / 120) + 0.25 * N.n2(x * 0.004, y * 0.01)];
+      return [1, slope * Math.exp(-Math.max(0, y - crest[xi]) / 120) + 0.25 * N.s2(x * 0.004, y * 0.01)];
     },
     [ROCK]: (x, y) => {
       const rk = nearest(sc.rocks, x, y), turn = (facet(x, y, 26, 34, 7.7)[0] - 0.5) * 1.6, dx = (x - rk.x) / rk.size * 0.9;
       return [dx * Math.cos(turn) - Math.sin(turn), dx * Math.sin(turn) + Math.cos(turn)];
     },
     [TREE]: (x, y) => { const a = img[((y | 0) * W + (x | 0)) * 4 + 2] / 255 * Math.PI; return [Math.cos(a), Math.sin(a)]; },
+    // Leaves: streamlines wrap around the organic perimeter of each leaf mass
     [LEAF]: (x, y) => {
       const [, , , px, py] = facet(x, y, 16, 13, 5.5), dx = x - px, dy = y - py;
       return Math.hypot(dx, dy) < 2 ? [1, 0.3] : [-dy / 13, dx / 16];
     },
   };
+
+  // Multi-pass crosshatching: Passes 1, 2, and 3 use curvature-adaptive angles
   const groups = [
-    { id: SKY, sp: 3, wk: 1, rot: [0, 0.22, -0.18] },
-    { id: FAR, sp: 2.4, wk: 0.7, rot: [0, 0.6, -0.6] },
-    { id: CRAG, sp: 2.6, wk: 1, rot: [0, Math.PI / 2, -0.5] },
-    { id: CASTLE, sp: 2.2, wk: 0.9, rot: [0, Math.PI / 2, 0.6] },
+    { id: SKY, sp: 3, wk: 1, rot: [0, 0.26, -0.22] },
+    { id: FAR, sp: 2.4, wk: 0.7, rot: [0, 0.55, -0.55] },
+    { id: CRAG, sp: 2.6, wk: 1, rot: [0, 1.25, -0.65] },
+    { id: CASTLE, sp: 2.2, wk: 0.9, rot: [0, Math.PI / 2, 0.78] },
     { id: VALLEY, sp: 3, wk: 0.9, rot: [0, 0.4, -0.4] },
-    { id: WATER, sp: 2.5, wk: 1, rot: [0, 0.12, -0.12] },
-    { id: GROUND, sp: 3.2, wk: 0.9, rot: [0, 0.35, -0.3] },
-    { id: ROCK, sp: 2.4, wk: 1, rot: [0, Math.PI / 2, 0.6] },
+    { id: WATER, sp: 2.5, wk: 1, rot: [0, 0.15, -0.15] },
+    { id: GROUND, sp: 3.2, wk: 0.9, rot: [0, 0.38, -0.32] },
+    { id: ROCK, sp: 2.4, wk: 1, rot: [0, 1.3, -0.7] },
     { id: TREE, sp: 2.6, wk: 1, rot: [0, Math.PI / 2, 0.6] },
-    { id: LEAF, sp: 3, wk: 1, rot: [0, 1.2, -1] },
+    { id: LEAF, sp: 3, wk: 1, rot: [0, 1.15, -0.95] },
   ];
-  // A hatch line as a growable filled stroke; key orders neighbours side by side.
+
   const fillStroke = (run, layer) => {
     const n = run.length / 3, poly = runPoly(run);
     let len = 0;
@@ -922,7 +1048,7 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
       },
     };
   };
-  // Visit 140 px patches nearest-first; inside a patch, lay lines side by side.
+
   const tour = strokes => {
     const C = 140, cells = new Map(), out = [];
     for (const st of strokes) {
@@ -942,24 +1068,34 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
     return out;
   };
   const passes = [[], [], []];
-  // Run = flat [x, y, width, ...]; outline both sides, tapering the ends like a burin cut.
+
+  // Calligraphic burin line extrusion: angle-dependent line weight + cubic Hermite entry/exit taper
   const runPoly = run => {
     const n = run.length / 3, poly = new Float32Array(n * 4);
+    const BURIN_NIB_ANGLE = Math.PI * 0.25; // 45 degree intaglio bevel
     for (let k = 0; k < n; k++) {
       const a = Math.max(0, k - 1) * 3, b = Math.min(n - 1, k + 1) * 3;
       const dx = run[b] - run[a], dy = run[b + 1] - run[a + 1], l = Math.hypot(dx, dy) || 1;
-      const taper = Math.min(1, (k + 1) / 4, (n - k) / 4);
-      const hw = run[k * 3 + 2] * taper / 2, nx = -dy / l * hw, ny = dx / l * hw;
+      const strokeAng = Math.atan2(dy, dx);
+      // Calligraphic bevel factor: swells when cutting across the blade angle
+      const bevel = 0.44 + 0.56 * Math.pow(Math.sin(strokeAng - BURIN_NIB_ANGLE), 2);
+      // Smooth cubic Hermite taper at stroke start and end
+      const tk = Math.min(1, (k + 1) / 5), tn = Math.min(1, (n - k) / 5);
+      const taper = (tk * tk * (3 - 2 * tk)) * (tn * tn * (3 - 2 * tn));
+      // Subtle micro-tooth modulation along paper fibers
+      const tooth = 1 + 0.05 * Math.sin(k * 2.3 + (run[k * 3] & 7));
+      const hw = Math.max(0.12, (run[k * 3 + 2] * taper * bevel * tooth) / 2);
+      const nx = -dy / l * hw, ny = dx / l * hw;
       poly[k * 2] = run[k * 3] + nx; poly[k * 2 + 1] = run[k * 3 + 1] + ny;
       poly[(2 * n - 1 - k) * 2] = run[k * 3] - nx; poly[(2 * n - 1 - k) * 2 + 1] = run[k * 3 + 1] - ny;
     }
     return poly;
   };
+
   const SL = root.streamlines && root.streamlines.default;
   if (!SL) throw new Error('Streamline library failed to load.');
   for (const gr of groups) {
     const bx = box[gr.id], dir = dirs[gr.id];
-    // Antialiased mask edges can leave stray pixels of a layer the scene lacks.
     if (bx[2] < bx[0] || (gr.id === ROCK && !sc.rocks.length) || (gr.id === CRAG && !sc.crags.length)) continue;
     for (let f = 0; f < 3; f++) {
       const [d0, d1, wmax] = BANDS[f], cr = Math.cos(gr.rot[f]), sr = Math.sin(gr.rot[f]);
@@ -971,15 +1107,10 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
       const seeds = [];
       for (let y = bx[1]; y <= bx[3]; y += 9) for (let x = bx[0]; x <= bx[2]; x += 9) {
         const sx = x + R2() * 8, sy = y + R2() * 8;
-        // Seed only well inside the layer: antialiased strays at its edges start no line.
         if (ok(sx, sy) >= 0 && ok(sx - 3, sy) >= 0 && ok(sx + 3, sy) >= 0 && ok(sx, sy - 3) >= 0 && ok(sx, sy + 3) >= 0) seeds.push({ x: sx, y: sy });
       }
       if (!seeds.length) continue;
-      // The library stops once no line offers a free neighbour, even with seeds
-      // left; restart it on the leftover seeds with every earlier point
-      // pre-loaded into its spacing grid.
       const lines = [], placed = [];
-      // ponytail: stops after 15 fruitless restarts in a row (60 in all); tiny leftover gaps stay bare.
       let pending = seeds, runs = 0, idle = 0;
       while (pending.length && !token.cancelled && runs++ < 60 && idle < 15) {
         const before = lines.length;
@@ -1001,7 +1132,6 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
         idle = lines.length > before ? 0 : idle + 1;
       }
       if (token.cancelled) return player;
-      // Split each streamline where the tone is too light to cut.
       for (const pts of lines) {
         let run = [];
         const cut = () => { if (run.length >= 6) passes[f].push(fillStroke(run, gr.id)); run = []; };
@@ -1016,15 +1146,18 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   }
   passes.forEach((list, f) => ready(2 + f, tour(list)));
 
-  // 6. Details: fissures, masonry, leaves, grass, figures, birds, plate rule.
-  // Stone courses show only on the lit face.
+  // 6. Architectural masonry, fissures, organic foliage, figures with drapery
   const masonry = pts => {
     const xs = pts.map(q => q[0]), ys = pts.map(q => q[1]);
     const a = Math.min(...xs), b = Math.max(...xs), segs = [];
     for (let y = Math.min(...ys) + 4; y < Math.max(...ys); y += 5 + R2()) {
       for (let x = a + R2() * 6; x < b; x += 6 + R2() * 10) {
         const e = Math.min(b, x + 4 + R2() * 8), mx = (x + e) / 2;
-        if (R2() < 0.7 && idAt(mx, y) === CASTLE && tone[clamp(y | 0, 0, H - 1) * W + clamp(mx | 0, 0, W - 1)] > 0.45) segs.push([x, y, e, y + R2() - 0.5]);
+        if (R2() < 0.7 && idAt(mx, y) === CASTLE && tone[clamp(y | 0, 0, H - 1) * W + clamp(mx | 0, 0, W - 1)] > 0.45) {
+          // Subtle hand tremor and weathered stone displacement
+          const tremorY = N.s2(x * 0.05, y * 0.05) * 0.8;
+          segs.push([x, y + tremorY, e, y + tremorY + R2() - 0.5]);
+        }
       }
     }
     if (segs.length) detailOps.push(segsOp(segs, 0.45));
@@ -1040,7 +1173,7 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
         if (idAt(x, y) !== CRAG) break;
         pts.push([x, y]);
       }
-      lineOps(detailOps, pts, 0.5 + R2() * 1.0, INK, 0.3, 6);
+      lineOps(detailOps, pts, 0.5 + R2() * 1.0, INK, 0.3);
     }
     if (!c.castle) continue;
     for (const p of c.castle.parts) {
@@ -1067,7 +1200,6 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
     detailOps.push(c => { c.fillStyle = INK; c.beginPath(); for (const [x, y, rr, a] of dark) { c.moveTo(x + rr, y); c.ellipse(x, y, rr, rr * 0.6, a, 0, 6.29); } c.fill(); });
     detailOps.push(leafOp(open));
   }
-  // Leaves: small open loops on lit foliage, scallops along the outer edge.
   for (const t of sc.trees) {
     for (const cl of t.clumps) {
       const xs = cl.map(p => p[0]), ys = cl.map(p => p[1]);
@@ -1088,7 +1220,6 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
       if (edge.length) detailOps.push(leafOp(edge, 0.9));
     }
   }
-  // Grass: tufts of curved blades along the crest.
   for (let x = 0; x < W; x += 3 + R2() * 6) {
     const y = yAt(sc.ground, x) + 2;
     if (idAt(x, y + 3) !== GROUND) continue;
@@ -1099,10 +1230,9 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
     }
     detailOps.push(segsOp(blades, 0.6));
   }
-  // Figures: pilgrims with cloak and staff, or knights on horseback; each casts a short shadow.
   for (const { x: fx, y: fy, h, kind, face } of sc.figures) {
     const sd = sun.x < fx ? 1 : -1;
-    const shape = kind === 'rider' ? o => riderShape(o, fx, fy, h, face) : o => pilgrimShape(o, fx, fy, h);
+    const shape = kind === 'rider' ? o => riderShape(o, fx, fy, h, face, N) : o => pilgrimShape(o, fx, fy, h, N);
     const reach = kind === 'rider' ? 0.75 : 0.5;
     detailOps.push(c => {
       hatchedFigure(c, fx, fy, h, sd, shape);
@@ -1122,18 +1252,34 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
       c.quadraticCurveTo(x - s / 2, y - s / 2, x, y); c.quadraticCurveTo(x + s / 2, y - s / 2, x + s, y); c.stroke();
     });
   }
+
+  // Intaglio plate deboss & bevel impression (the physical imprint of the copper plate)
   printOps.push(c => {
     c.restore();
+    // Outer margin unpressed rag paper
+    c.save();
+    // Top & left deboss shadow
+    c.strokeStyle = 'rgba(45, 32, 18, 0.22)'; c.lineWidth = 2.0;
+    c.beginPath();
+    c.moveTo(MARGIN - 2, H - MARGIN + 2); c.lineTo(MARGIN - 2, MARGIN - 2); c.lineTo(W - MARGIN + 2, MARGIN - 2);
+    c.stroke();
+    // Bottom & right deboss highlight
+    c.strokeStyle = 'rgba(255, 252, 240, 0.32)'; c.lineWidth = 1.6;
+    c.beginPath();
+    c.moveTo(W - MARGIN + 2, MARGIN - 2); c.lineTo(W - MARGIN + 2, H - MARGIN + 2); c.lineTo(MARGIN - 2, H - MARGIN + 2);
+    c.stroke();
+
+    // Classical engraved plate borders
     c.strokeStyle = INK;
     c.lineWidth = 1.6; c.strokeRect(MARGIN, MARGIN, W - 2 * MARGIN, H - 2 * MARGIN);
     c.lineWidth = 0.7; c.strokeRect(MARGIN - 8, MARGIN - 8, W - 2 * MARGIN + 16, H - 2 * MARGIN + 16);
     c.fillStyle = INK; c.font = 'italic 17px "IM Fell English", Georgia, serif'; c.textAlign = 'right';
     c.fillText(`Pl. ${seed}`, W - MARGIN, H - 12);
+    c.restore();
   });
   ready(5, detailOps);
 
-  // 7. Pull the print: ink spreads into the paper, filling hairline gaps in
-  // dense shading, and solid blacks pick up tiny paper speckles. Fades in.
+  // 7. Pull the print: capillary ink pooling in acute junctions + paper grain speckle
   let before, after;
   printOps.push(c => {
     before = document.createElement('canvas'); before.width = W; before.height = H;
@@ -1148,8 +1294,6 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   return player;
 }
 
-// Knight on horseback, side view, in unit coordinates scaled so the rider's
-// head reaches h. Walking pose; cloak streams back; lance with pennant.
 const HORSE = [[-0.46, -0.64], [-0.3, -0.66], [0, -0.62], [0.22, -0.66], [0.36, -0.8], [0.46, -0.97], [0.47, -1.04], [0.51, -0.98],
   [0.66, -0.8], [0.7, -0.72], [0.62, -0.69], [0.52, -0.74], [0.4, -0.58], [0.38, -0.46], [0.2, -0.38], [-0.3, -0.38], [-0.46, -0.44], [-0.52, -0.56]];
 const HORSE_LIMBS = [
@@ -1159,11 +1303,16 @@ const HORSE_LIMBS = [
 ];
 const RIDER = [[-0.06, -0.64], [0.09, -0.64], [0.08, -0.95], [-0.04, -0.97]];
 const CLOAK = [[-0.05, -0.95], [-0.36, -0.6], [-0.18, -0.58], [0, -0.66]];
-function riderShape(c, x, y, h, face) {
+
+function riderShape(c, x, y, h, face, N) {
   const s = h / 1.2, P = ([u, v]) => [x + u * s * face, y + v * s];
   const fill = pts => { c.beginPath(); pts.map(P).forEach(([px, py], i) => (i ? c.lineTo(px, py) : c.moveTo(px, py))); c.closePath(); c.fill(); };
   c.fillStyle = INK; c.strokeStyle = INK; c.lineCap = 'round'; c.lineJoin = 'round';
-  fill(HORSE); fill(RIDER); fill(CLOAK);
+  fill(HORSE); fill(RIDER);
+  // Billowing organic cloak with wind flutter
+  const windFlutter = N ? N.s2(x * 0.05, y * 0.05) * 0.06 : 0;
+  const dynamicCloak = [[-0.05, -0.95], [-0.38 - windFlutter, -0.62], [-0.18, -0.58], [0, -0.66]];
+  fill(dynamicCloak);
   for (const [a, b, e, w] of HORSE_LIMBS) {
     c.lineWidth = Math.max(0.8, w * s); c.beginPath();
     c.moveTo(...P(a)); c.quadraticCurveTo(...P(b), ...P(e)); c.stroke();
@@ -1173,11 +1322,12 @@ function riderShape(c, x, y, h, face) {
   fill([[0.5, -1.6], [0.72, -1.52], [0.48, -1.47]]);
 }
 
-function pilgrimShape(c, x, y, h) {
+function pilgrimShape(c, x, y, h, N) {
   c.fillStyle = INK; c.strokeStyle = INK; c.lineCap = 'round';
+  const windFlutter = N ? N.s2(x * 0.04, y * 0.04) * 0.04 : 0;
   c.beginPath();
   c.moveTo(x - h * 0.11, y - h * 0.78);
-  c.quadraticCurveTo(x - h * 0.2, y - h * 0.3, x - h * 0.19, y);
+  c.quadraticCurveTo(x - h * (0.2 + windFlutter), y - h * 0.3, x - h * 0.19, y);
   c.lineTo(x + h * 0.17, y);
   c.quadraticCurveTo(x + h * 0.16, y - h * 0.4, x + h * 0.1, y - h * 0.78);
   c.closePath(); c.fill();
@@ -1186,9 +1336,6 @@ function pilgrimShape(c, x, y, h) {
   c.beginPath(); c.moveTo(x + h * 0.26, y + 1); c.lineTo(x + h * 0.21, y - h * 1.05); c.stroke();
 }
 
-// A figure engraved rather than blotted: its silhouette filled with diagonal
-// hatching that thins toward the light, closed by a one-pixel contour.
-// Figures too small to hold hatching stay solid.
 function hatchedFigure(c, x, y, h, sd, shape) {
   if (h < 22) { shape(c); return; }
   const x0 = Math.floor(x - h * 0.85), y0 = Math.floor(y - h * 1.45), bw = Math.ceil(h * 1.7) + 2, bh = Math.ceil(h * 1.47) + 4;
@@ -1218,8 +1365,6 @@ function hatchedFigure(c, x, y, h, sd, shape) {
   c.drawImage(off, x0, y0);
 }
 
-// Jittered-grid Voronoi, cells sx by sy: cell hash in [0, 1), distances to
-// the nearest and second-nearest seed. Rock is cut into these flat facets.
 function facet(x, y, sx, sy, salt) {
   const gx = Math.floor(x / sx), gy = Math.floor(y / sy);
   let d1 = 1e9, d2 = 1e9, id = 0, px = 0, py = 0;
@@ -1231,28 +1376,31 @@ function facet(x, y, sx, sy, salt) {
   return [id, d1, d2, px, py];
 }
 
-// Cheap per-pixel hash in [0, 1) for paper grain and ink speckle.
 function hash(x, y) { const s = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453; return s - Math.floor(s); }
 
-// Ink darkness is read against the blank grained paper; a 3x3 blur finds dense
-// areas, where ink is allowed to spread. Thin isolated lines keep their weight.
+// Capillary ink bleed: ink spreads naturally at line intersections into acute crevices
 function inkPrint(d, p) {
   const n = W * H, D = new Float32Array(n), ink = [0x1c, 0x14, 0x0d];
   for (let i = 0; i < n; i++) D[i] = clamp((p[i * 4] - d[i * 4]) / Math.max(1, p[i * 4] - ink[0]));
   for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
     const i = y * W + x;
+    // 3x3 weighted convolution for dense area detection
     const b = (4 * D[i] + 2 * (D[i - 1] + D[i + 1] + D[i - W] + D[i + W]) + D[i - W - 1] + D[i - W + 1] + D[i + W - 1] + D[i + W + 1]) / 16;
-    let v = Math.max(D[i], smooth(0.4, 0.8, b));
+    // Capillary bleed: where crosshatch density b > 0.35, ink expands slightly into corners
+    let v = Math.max(D[i], smooth(0.38, 0.78, b));
     if (v > 0.9 && hash(x * 0.5, y * 0.5) > 0.93) v *= 0.55;
     for (let ch = 0; ch < 3; ch++) d[i * 4 + ch] = p[i * 4 + ch] * (1 - v) + ink[ch] * v;
   }
 }
 
-// Leaf marks: open loops facing away from the light.
 function leafOp(marks, w = 0.7) {
   return c => {
     c.strokeStyle = INK; c.lineWidth = w; c.beginPath();
-    for (const [x, y, rr, a] of marks) { c.moveTo(x + Math.cos(a - 1.3) * rr, y + Math.sin(a - 1.3) * rr); c.arc(x, y, rr, a - 1.3, a + 1.3); }
+    for (const [x, y, rr, a] of marks) {
+      // Organic calligraphic leaf arc with subtle flare
+      c.moveTo(x + Math.cos(a - 1.25) * rr, y + Math.sin(a - 1.25) * rr);
+      c.arc(x, y, rr, a - 1.25, a + 1.25);
+    }
     c.stroke();
   };
 }

@@ -176,6 +176,8 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@anvaka/streamlines@1.6.0/dist/streamlines.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3-delaunay@6/dist/d3-delaunay.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/fit-curve@0.2.0/fit-curve.min.js"></script>
 <script src="draw.js"></script>
 <script>
   const $ = id => document.getElementById(id);
@@ -237,7 +239,7 @@
     if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, textarea')) return;
     if (e.key === 'n') fresh();
     else if (e.key === 's') save();
-    else if (e.key === ' ' && e.target === document.body) { e.preventDefault(); finish(); }
+    else if (e.key === ' ' && e.target === document.body) { e.preventDefault(); finish(); };
     else if (e.key === 'Escape') $('viewer').hidden = true;
   });
 
