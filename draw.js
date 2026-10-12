@@ -1110,7 +1110,7 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   await tick();
   if (token.cancelled) return player;
 
-  const SL = root.streamlines && root.streamlines.default;
+  const SL = (typeof window !== 'undefined' ? window.streamlines : typeof globalThis !== 'undefined' ? globalThis.streamlines : root.streamlines)?.default || root?.streamlines?.default || (typeof streamlines !== 'undefined' ? streamlines.default : null);
   if (!SL) throw new Error('Streamline library failed to load.');
   for (const gr of groups) {
     const bx = box[gr.id], dir = dirs[gr.id];
