@@ -17,6 +17,13 @@ console.log('ok', [...seen].join(', '));
 const { roadAtForTest } = require('./draw.js');
 if (roadAtForTest) for (const s of [0, 0.5, 1, 1.0000000000000002]) assert.ok(isFinite(roadAtForTest({ x0: 0, x1: 1, yEnd: 0, amp: 1, k: 1, ph: 0 }, s).w));
 
+// A 45° burin cuts thin along the blade and wide across it.
+const { burinBite } = require('./draw.js');
+const along = burinBite(1, 1), across = burinBite(-1, 1);
+assert.ok(Math.abs(along - 0.45) < 1e-9, `along-nib width ${along}`);
+assert.ok(Math.abs(across - 1.31) < 1e-9, `across-nib width ${across}`);
+console.log('ok burin', along, across);
+
 // Validate index.html inline scripts syntax
 const fs = require('fs');
 const html = fs.readFileSync('index.html', 'utf8');

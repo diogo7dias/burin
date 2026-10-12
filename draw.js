@@ -104,6 +104,12 @@ function makeNoise(rand) {
 }
 
 const clamp = (v, a = 0, b = 1) => v < a ? a : v > b ? b : v;
+// Flat burin held at 45°. Along the blade the cut stays a hairline. Across it, the cut is heavy.
+// The two weights average near the old uniform width when strokes point every way.
+function burinBite(dx, dy) {
+  const across = Math.abs(Math.sin(Math.atan2(dy, dx) - Math.PI / 4));
+  return 0.45 + 0.86 * across;
+}
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
 const noiseFor = seed => makeNoise(mulberry32((seed ^ 0x9e3779b9) >>> 0));
 
@@ -1046,12 +1052,11 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   // a little pressure and thins out as the nib lifts away.
   const runPoly = run => {
     const n = run.length / 3, poly = new Float32Array(n * 4);
-    const BURIN_NIB_ANGLE = Math.PI * 0.25; // 45 degree intaglio bevel
     for (let k = 0; k < n; k++) {
       const a = Math.max(0, k - 1) * 3, b = Math.min(n - 1, k + 1) * 3;
       const dx = run[b] - run[a], dy = run[b + 1] - run[a + 1], l = Math.hypot(dx, dy) || 1;
       const taper = Math.min(1, 0.6 + k * 0.2) * (0.3 + 0.7 * Math.min(1, (n - 1 - k) / (n * 0.4)));
-      const hw = run[k * 3 + 2] * taper / 2, nx = -dy / l * hw, ny = dx / l * hw;
+      const hw = run[k * 3 + 2] * taper * burinBite(dx, dy) / 2, nx = -dy / l * hw, ny = dx / l * hw;
       poly[k * 2] = run[k * 3] + nx; poly[k * 2 + 1] = run[k * 3 + 1] + ny;
       poly[(2 * n - 1 - k) * 2] = run[k * 3] - nx; poly[(2 * n - 1 - k) * 2 + 1] = run[k * 3 + 1] - ny;
     }
@@ -1478,6 +1483,6 @@ function quad(m, [x1, y1, x2, y2, wa, wb]) {
   m.closePath();
 }
 
-const api = { makeScene, render, W, H, roadAtForTest: roadAt };
+const api = { makeScene, render, W, H, roadAtForTest: roadAt, burinBite };
 if (typeof module !== 'undefined') module.exports = api; else root.Engraver = api;
 })(this);
