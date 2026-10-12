@@ -546,7 +546,14 @@ function makeTree(x, y, height, lean, leafy, R, r, N, { wk = 1, tone = 0.28, dep
 }
 
 // Darkness bands: family i starts at d0, reaches full pen pressure at d1.
-const BANDS = [[0.04, 0.5], [0.38, 0.78], [0.66, 1]];
+// Pass 0 follows the form from the lights. The later passes wait for shadow.
+const BANDS = [[0.04, 0.5], [0.55, 0.9], [0.75, 1]];
+// Pass 0 stays with the form. Pass 1 cuts straight across it. Pass 2 cuts
+// across as well, a little off the square, and only in the deepest shadow.
+function hatchTurn(pass) {
+  if (pass <= 0) return 0;
+  return pass === 1 ? Math.PI / 2 : Math.PI / 2 + 0.45;
+}
 
 const tick = () => new Promise(res => setTimeout(res, 0));
 
@@ -986,16 +993,16 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   };
   // sp: line spacing, wk: nib width, pen: stroke length range before the hand lifts.
   const groups = [
-    { id: SKY, sp: 4.2, wk: 0.75, pen: [50, 140], rot: [0, 0.6, -0.55] },
-    { id: FAR, sp: 3.6, wk: 0.55, pen: [30, 80], rot: [0, 0.7, -0.6] },
-    { id: CRAG, sp: 3.8, wk: 1, pen: [25, 70], rot: [0, 0.9, -0.7] },
-    { id: CASTLE, sp: 3.4, wk: 0.85, pen: [60, 160], rot: [0, Math.PI / 2, 0.7] },
-    { id: VALLEY, sp: 4.2, wk: 0.8, pen: [35, 90], rot: [0, 0.5, -0.5] },
-    { id: WATER, sp: 3.8, wk: 0.85, pen: [40, 120], rot: [0, 0.2, -0.2] },
-    { id: GROUND, sp: 4.4, wk: 1.1, pen: [25, 70], rot: [0, 0.6, -0.5] },
-    { id: ROCK, sp: 3.6, wk: 1.25, pen: [15, 40], rot: [0, 0.9, -0.7] },
-    { id: TREE, sp: 3.6, wk: 1.2, pen: [40, 110], rot: [0, Math.PI / 2, 0.7] },
-    { id: LEAF, sp: 4, wk: 1.1, pen: [8, 22], rot: [0, 1.1, -0.9] },
+    { id: SKY, sp: 4.2, wk: 0.75, pen: [50, 140] },
+    { id: FAR, sp: 3.6, wk: 0.55, pen: [30, 80] },
+    { id: CRAG, sp: 3.8, wk: 1, pen: [25, 70] },
+    { id: CASTLE, sp: 3.4, wk: 0.85, pen: [60, 160] },
+    { id: VALLEY, sp: 4.2, wk: 0.8, pen: [35, 90] },
+    { id: WATER, sp: 3.8, wk: 0.85, pen: [40, 120] },
+    { id: GROUND, sp: 4.4, wk: 1.1, pen: [25, 70] },
+    { id: ROCK, sp: 3.6, wk: 1.25, pen: [15, 40] },
+    { id: TREE, sp: 3.6, wk: 1.2, pen: [40, 110] },
+    { id: LEAF, sp: 4, wk: 1.1, pen: [8, 22] },
   ];
   // A hatch line as a growable filled stroke; key orders neighbours side by side.
   // Ink load: a fresh dip lays down near-black, a pen running dry goes browner.
@@ -1135,7 +1142,9 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
             if (ok(p.x, p.y) < 0) return;
             const [dx, dy] = dir(p.x, p.y);
             const loosen = gr.id === CASTLE || gr.id === FAR ? 0.16 : 0.5;
-            const a = gr.rot[f] + N.n2(p.x * 0.007, p.y * 0.007 + f * 17) * loosen;
+            // Water stays a ripple. A square cross would turn the lake into a net.
+            const turn = gr.id === WATER ? [0, 0.2, -0.2][f] : hatchTurn(f);
+            const a = turn + N.n2(p.x * 0.007, p.y * 0.007 + f * 17) * loosen;
             const cr = Math.cos(a), sr = Math.sin(a);
             return { x: dx * cr - dy * sr, y: dx * sr + dy * cr };
           },
@@ -1473,6 +1482,6 @@ function quad(m, [x1, y1, x2, y2, wa, wb]) {
   m.closePath();
 }
 
-const api = { makeScene, render, W, H, roadAtForTest: roadAt, burinBite, taperAt, handLag, handTravel };
+const api = { makeScene, render, W, H, roadAtForTest: roadAt, burinBite, taperAt, handLag, handTravel, hatchTurn };
 if (typeof module !== 'undefined') module.exports = api; else root.Engraver = api;
 })(this);

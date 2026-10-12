@@ -56,7 +56,7 @@ graph LR
 1. **Scene Composition:** Procedurally calculates horizon heights, sun/moon positions, mountain profiles via fractal Brownian motion (fBm), structures, trees, figures, and roads.
 2. **Pencil Underdrawing:** Light, searching graphite strokes overshoot contours, sketching the initial layout.
 3. **Tone Map & Vector Direction Fields:** A multi-layered tone mask establishes local light values and directional tangent fields for each surface type.
-4. **Hatching Passes (1/3, 2/3, 3/3):** Streamlines trace the vector fields. Each line then shifts off that gap, turns a little, swells through the stroke, and lifts on its own length. Later passes add crosshatching as the tone deepens. The burin is held at 45°: a hairline along the blade, heavy across it.
+4. **Hatching Passes (1/3, 2/3, 3/3):** The first pass follows the form. The darker passes cut across it, and only once the tone is shadow. Each line then shifts off its gap, swells through the stroke, and lifts on its own length. Water stays a ripple. The burin is held at 45°: a hairline along the blade, heavy across it.
 5. **Fine Engraving Details:** Fissures in rock faces, ashlar masonry courses, ivy tendrils, grass blades, birds in flight, and shaded figures.
 6. **Pulling the Print:** Simulates ink absorption into rag paper, pooling in dense hatching and leaving micro-speckles across solid blacks.
 
@@ -112,7 +112,7 @@ The same seed still finishes as the same plate. What changed is the cut:
 - Each ink stroke picks its own attack and lift from the seed.
 - Hands in one pass are staggered, so they are not on one clock. Skipping to the end does not change the plate.
 - Pencil marks and the small detail cuts use [perfect-freehand](https://github.com/steveruizok/perfect-freehand) 1.2.3. Hatch and outlines stay filled ribbons.
-- Hatch lines share one flow per pass (`dSep` is the layer spacing). Each whole line then shifts by up to `0.675` of that gap and bows by up to `0.225`. Width is multiplied by `0.55` at the ends and `1.35` in the middle. Castle walls and far hills turn less (`0.16` against `0.5`), so the building stays straight.
+- The first hatch pass follows the form. Pass 2 cuts across it (`π/2`) once darkness reaches `0.55`. Pass 3 cuts across and a little off the square (`π/2 + 0.45`) from `0.75`. Water keeps a ripple (`0`, `0.2`, `-0.2`) instead of a net. Each whole line then shifts by up to `0.675` of the layer gap and bows by up to `0.225`. Width is multiplied by `0.55` at the ends and `1.35` in the middle. Castle walls and far hills turn less (`0.16` against `0.5`), so the building stays straight.
 
 ## 📚 Credits & Acknowledgements
 

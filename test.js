@@ -39,6 +39,11 @@ assert.strictEqual(handTravel(0.1, 0.16), 0);
 assert.strictEqual(handTravel(1, 0.16), 1);
 assert.ok(handTravel(0.2, handLag(0, 2, 0)) > handTravel(0.2, handLag(1, 2, 0)) * 3);
 console.log('ok hands', handTravel(0.2, 0.16));
+const { hatchTurn } = require('./draw.js');
+assert.strictEqual(hatchTurn(0), 0);
+assert.ok(Math.abs(hatchTurn(1) - Math.PI / 2) < 1e-9);
+assert.ok(Math.abs(hatchTurn(2) - (Math.PI / 2 + 0.45)) < 1e-9);
+console.log('ok turn', hatchTurn(1));
 
 // Validate index.html inline scripts syntax
 const fs = require('fs');
