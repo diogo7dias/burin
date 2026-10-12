@@ -126,15 +126,6 @@ function handTravel(f, lag) {
   if (f <= lag) return 0;
   return (f - lag) / (1 - lag);
 }
-// Four hatch gaps. A line stops at the patch edge, so the set sits tighter than 1
-// and the layer keeps its old amount of ink.
-const HATCH_GAPS = [0.68, 0.83, 0.98, 1.13];
-function hatchBucket(patchId) {
-  return Math.min(HATCH_GAPS.length - 1, Math.max(0, (patchId * HATCH_GAPS.length) | 0));
-}
-function hatchGap(patchId) {
-  return HATCH_GAPS[hatchBucket(patchId)];
-}
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
 const noiseFor = seed => makeNoise(mulberry32((seed ^ 0x9e3779b9) >>> 0));
 
@@ -1121,10 +1112,7 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
     const bx = box[gr.id], dir = dirs[gr.id];
     if (bx[2] < bx[0] || (gr.id === ROCK && !sc.rocks.length) || (gr.id === CRAG && !sc.crags.length)) continue;
     for (let f = 0; f < 3; f++) {
-      // The hand hatches in patches: each patch gets its own slight turn, and
-      // every stroke in it lifts at the patch edge, so the ends line up.
-      const [d0, d1] = BANDS[f], P = gr.pen[1] * 0.8, salt = gr.id * 0.37 + f * 5.3;
-      const patch = (x, y) => facet(x, y, P, P * 0.8, salt)[0];
+      const [d0, d1] = BANDS[f];
       const ok = (x, y) => {
         if (x < 0 || y < 0 || x >= W || y >= H) return -1;
         const i = (y | 0) * W + (x | 0);
@@ -1136,71 +1124,66 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
         if (ok(sx, sy) >= 0 && ok(sx - 3, sy) >= 0 && ok(sx + 3, sy) >= 0 && ok(sx, sy - 3) >= 0 && ok(sx, sy + 3) >= 0) seeds.push({ x: sx, y: sy });
       }
       if (!seeds.length) continue;
-      // Cut each streamline into pen strokes: a hand's length, then a small lift.
-      // A stroke starts only where the tone is clearly dark enough and runs on
-      // until it is clearly too light, so light areas never crumble into specks.
-      // Each stroke bows slightly, as a wrist swings, and wavers a little.
-      const cutLines = lines => { for (const pts of lines) {
-        // Each line reads patch edges at its own small offset, so the ends of
-        // neighbouring strokes stagger instead of ruling a seam.
-        let run = [], len = 0, gap = R2() * 6, id = -1;
-        const jx = (R2() - 0.5) * P * 0.35, jy = (R2() - 0.5) * P * 0.35;
+      // One flow, then each line leaves it. Direction wanders, the line sits
+      // off the even gap, and the nib swells through the stroke.
+      const lines = [], placed = [];
+      let pending = seeds, runs = 0, idle = 0;
+      while (pending.length && !token.cancelled && runs++ < 60 && idle < 15) {
+        const before = lines.length;
+        const job = SL({
+          vectorField: p => {
+            if (ok(p.x, p.y) < 0) return;
+            const [dx, dy] = dir(p.x, p.y);
+            const loosen = gr.id === CASTLE || gr.id === FAR ? 0.16 : 0.5;
+            const a = gr.rot[f] + N.n2(p.x * 0.007, p.y * 0.007 + f * 17) * loosen;
+            const cr = Math.cos(a), sr = Math.sin(a);
+            return { x: dx * cr - dy * sr, y: dx * sr + dy * cr };
+          },
+          boundingBox: { left: bx[0] - 2, top: bx[1] - 2, width: bx[2] - bx[0] + 4, height: bx[3] - bx[1] + 4 },
+          seed: pending, dSep: gr.sp, dTest: gr.sp * 0.55, timeStep: 1.6,
+          stepsPerIteration: 400, maxTimePerIteration: 14,
+          onStreamlineAdded: pts => { if (token.cancelled) job.dispose(); else { lines.push(pts.map(p => [p.x, p.y])); placed.push(...pts); } },
+        });
+        const grid = job.getGrid();
+        for (const q of placed) grid.occupyCoordinates(q);
+        await job.run();
+        pending = pending.filter(q => !grid.isTaken(q.x, q.y, d => d < gr.sp));
+        idle = lines.length > before ? 0 : idle + 1;
+      }
+      if (token.cancelled) return player;
+      for (const pts of lines) {
+        // The whole line sits off the ruler. A sine that dies at both ends would
+        // snap every stroke back onto the comb.
+        const shift = (R2() - 0.5) * gr.sp * 1.35;
+        let run = [], len = 0, gap = R2() * 6, reach = gr.pen[0] + R2() * (gr.pen[1] - gr.pen[0]);
         const cut = (lift = true) => {
           const n = run.length / 3;
           if (len >= Math.min(8, gr.pen[0])) {
-            const bow = (R2() - 0.5) * 0.04 * len, o = R2() * 1000;
+            const bow = (R2() - 0.5) * gr.sp * 0.45, o = R2() * 1000;
             const ex = run[run.length - 3] - run[0], ey = run[run.length - 2] - run[1], el = Math.hypot(ex, ey) || 1;
             for (let k = 0; k < n; k++) {
-              const t = k / (n - 1), off = bow * 4 * t * (1 - t) + N.n2(k * 0.05, o) * 0.35;
-              run[k * 3] += -ey / el * off; run[k * 3 + 1] += ex / el * off;
+              const t = n <= 1 ? 0 : k / (n - 1);
+              const off = shift + bow * Math.sin(Math.PI * t) + N.n2(k * 0.07, o) * gr.sp * 0.12;
+              run[k * 3] += -ey / el * off;
+              run[k * 3 + 1] += ex / el * off;
+              run[k * 3 + 2] *= 0.55 + 0.8 * Math.sin(Math.PI * t);
             }
             passes[f].push(fillStroke(run, gr.id));
           }
           if (run.length && lift) gap = 1.5 + R2() * 3.5;
           run = []; len = 0;
+          reach = gr.pen[0] + R2() * (gr.pen[1] - gr.pen[0]);
         };
         for (let k = 0; k < pts.length; k++) {
           const [x, y] = pts[k], step = k ? Math.hypot(x - pts[k - 1][0], y - pts[k - 1][1]) : 0;
           if (gap > 0) { gap -= step; continue; }
           const i = ok(x, y), lv = i < 0 ? -1 : (pen[i] - d0) / (d1 - d0);
           if (lv < (run.length ? 0 : 0.1)) { cut(); continue; }
-          // A new patch starts where the last stroke ended, overlapping it.
-          const pid = patch(x + jx, y + jy);
-          if (run.length && (pid !== id || len >= gr.pen[1] * 1.3)) { const last = run.slice(-6); cut(false); run.push(...last); len = 0; }
-          id = pid;
+          if (run.length && len >= reach) { const last = run.slice(-6); cut(false); run.push(...last); len = 0; }
           if (run.length) len += step;
           run.push(x, y, gr.wk * (0.5 + 1.6 * Math.pow(clamp(lv), 1.3)));
         }
         cut();
-      }
-      };
-      for (let bi = 0; bi < HATCH_GAPS.length; bi++) {
-        let pending = seeds.filter(s => hatchBucket(patch(s.x, s.y)) === bi);
-        if (!pending.length) continue;
-        const sep = gr.sp * HATCH_GAPS[bi];
-        const lines = [], placed = [];
-        let runs = 0, idle = 0;
-        while (pending.length && !token.cancelled && runs++ < 60 && idle < 15) {
-          const before = lines.length;
-          const job = SL({
-            vectorField: p => {
-              if (ok(p.x, p.y) < 0 || hatchBucket(patch(p.x, p.y)) !== bi) return;
-              const [dx, dy] = dir(p.x, p.y), a = gr.rot[f] + (patch(p.x, p.y) - 0.5) * 0.35, cr = Math.cos(a), sr = Math.sin(a);
-              return { x: dx * cr - dy * sr, y: dx * sr + dy * cr };
-            },
-            boundingBox: { left: bx[0] - 2, top: bx[1] - 2, width: bx[2] - bx[0] + 4, height: bx[3] - bx[1] + 4 },
-            seed: pending, dSep: sep, dTest: sep * 0.55, timeStep: 1.6,
-            stepsPerIteration: 400, maxTimePerIteration: 14,
-            onStreamlineAdded: pts => { if (token.cancelled) job.dispose(); else { lines.push(pts.map(p => [p.x, p.y])); placed.push(...pts); } },
-          });
-          const grid = job.getGrid();
-          for (const q of placed) grid.occupyCoordinates(q);
-          await job.run();
-          pending = pending.filter(q => !grid.isTaken(q.x, q.y, d => d < sep));
-          idle = lines.length > before ? 0 : idle + 1;
-        }
-        if (token.cancelled) return player;
-        cutLines(lines);
       }
     }
   }
@@ -1490,6 +1473,6 @@ function quad(m, [x1, y1, x2, y2, wa, wb]) {
   m.closePath();
 }
 
-const api = { makeScene, render, W, H, roadAtForTest: roadAt, burinBite, taperAt, handLag, handTravel, hatchGap };
+const api = { makeScene, render, W, H, roadAtForTest: roadAt, burinBite, taperAt, handLag, handTravel };
 if (typeof module !== 'undefined') module.exports = api; else root.Engraver = api;
 })(this);
