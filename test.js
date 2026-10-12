@@ -23,6 +23,12 @@ const along = burinBite(1, 1), across = burinBite(-1, 1);
 assert.ok(Math.abs(along - 0.45) < 1e-9, `along-nib width ${along}`);
 assert.ok(Math.abs(across - 1.31) < 1e-9, `across-nib width ${across}`);
 console.log('ok burin', along, across);
+const { taperAt } = require('./draw.js');
+assert.strictEqual(taperAt(0, 0.2, 0.4, 0.35, 0.3), 0.35);
+assert.strictEqual(taperAt(1, 0.2, 0.4, 0.35, 0.3), 0.3);
+assert.strictEqual(taperAt(0.5, 0.2, 0.4, 0.35, 0.3), 1);
+assert.ok(Math.abs(taperAt(0.8, 0.2, 0.4, 0.35, 0.3) - 0.65) < 1e-9);
+console.log('ok taper');
 
 // Validate index.html inline scripts syntax
 const fs = require('fs');

@@ -110,6 +110,12 @@ function burinBite(dx, dy) {
   const across = Math.abs(Math.sin(Math.atan2(dy, dx) - Math.PI / 4));
   return 0.45 + 0.86 * across;
 }
+// u is 0 at the landing and 1 at the lift. Head and tail are fractions of the stroke.
+function taperAt(u, head, tail, headThin, tailThin) {
+  const grow = headThin + (1 - headThin) * Math.min(1, head > 0 ? u / head : 1);
+  const lift = tailThin + (1 - tailThin) * Math.min(1, tail > 0 ? (1 - u) / tail : 1);
+  return grow * lift;
+}
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
 const noiseFor = seed => makeNoise(mulberry32((seed ^ 0x9e3779b9) >>> 0));
 
@@ -633,6 +639,8 @@ function drawNib(c, x, y, pencil) {
 
 async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay = null } = {}) {
   const sc = makeScene(seed), N = noiseFor(seed), R2 = mulberry32((seed + 7919) >>> 0);
+  // Own stream. Taper picks must not shift the stroke breaks on R2.
+  const Rtap = mulberry32((seed + 0x51A9) >>> 0);
   const { sun, waterY, sky } = sc;
   canvas.width = W; canvas.height = H;
   if (overlay) { overlay.width = W; overlay.height = H; }
@@ -1010,7 +1018,8 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   // Ink load: a fresh dip lays down near-black, a pen running dry goes browner.
   const inkLoad = () => { const k = R2() * R2() * 0.9; return `rgb(${28 + 50 * k | 0},${20 + 38 * k | 0},${13 + 26 * k | 0})`; };
   const fillStroke = (run, layer) => {
-    const n = run.length / 3, poly = runPoly(run);
+    const n = run.length / 3;
+    const poly = runPoly(run, 0.02 + Rtap() * 0.2, 0.15 + Rtap() * 0.5, 0.35 + Rtap() * 0.5, 0.12 + Rtap() * 0.45);
     let len = 0;
     for (let k = 1; k < n; k++) len += Math.hypot(run[k * 3] - run[k * 3 - 3], run[k * 3 + 1] - run[k * 3 - 2]);
     let dx = run[run.length - 3] - run[0], dy = run[run.length - 2] - run[1];
@@ -1048,14 +1057,13 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
     return out;
   };
   const passes = [[], [], []];
-  // Run = flat [x, y, width, ...]; outline both sides. A pen stroke lands with
-  // a little pressure and thins out as the nib lifts away.
-  const runPoly = run => {
+  // Run = flat [x, y, width, ...]; outline both sides. Each stroke brings its own attack and lift.
+  const runPoly = (run, head, tail, headThin, tailThin) => {
     const n = run.length / 3, poly = new Float32Array(n * 4);
     for (let k = 0; k < n; k++) {
       const a = Math.max(0, k - 1) * 3, b = Math.min(n - 1, k + 1) * 3;
       const dx = run[b] - run[a], dy = run[b + 1] - run[a + 1], l = Math.hypot(dx, dy) || 1;
-      const taper = Math.min(1, 0.6 + k * 0.2) * (0.3 + 0.7 * Math.min(1, (n - 1 - k) / (n * 0.4)));
+      const taper = taperAt(n <= 1 ? 0 : k / (n - 1), head, tail, headThin, tailThin);
       const hw = run[k * 3 + 2] * taper * burinBite(dx, dy) / 2, nx = -dy / l * hw, ny = dx / l * hw;
       poly[k * 2] = run[k * 3] + nx; poly[k * 2 + 1] = run[k * 3 + 1] + ny;
       poly[(2 * n - 1 - k) * 2] = run[k * 3] - nx; poly[(2 * n - 1 - k) * 2 + 1] = run[k * 3 + 1] - ny;
@@ -1483,6 +1491,6 @@ function quad(m, [x1, y1, x2, y2, wa, wb]) {
   m.closePath();
 }
 
-const api = { makeScene, render, W, H, roadAtForTest: roadAt, burinBite };
+const api = { makeScene, render, W, H, roadAtForTest: roadAt, burinBite, taperAt };
 if (typeof module !== 'undefined') module.exports = api; else root.Engraver = api;
 })(this);
