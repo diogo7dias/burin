@@ -129,40 +129,20 @@ function handTravel(f, lag) {
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
 const noiseFor = seed => makeNoise(mulberry32((seed ^ 0x9e3779b9) >>> 0));
 
-// Perfect-freehand organic stroke generator: converts points into pressure/velocity-modeled outline polygon
-function getOrganicStroke(points, { size = 2, thinning = 0.45, smoothing = 0.5, taperStart = 0.08, taperEnd = 0.12, simulatePressure = true } = {}) {
-  if (!points || points.length < 2) return [];
-  const pts = [];
-  let prev = points[0], totalLen = 0;
-  pts.push({ x: prev[0], y: prev[1], dist: 0, p: points[0][2] ?? 0.5 });
-  for (let i = 1; i < points.length; i++) {
-    const curr = points[i];
-    const d = Math.hypot(curr[0] - prev[0], curr[1] - prev[1]);
-    if (d < 0.2 && i < points.length - 1) continue;
-    totalLen += d;
-    const speed = Math.min(10, d);
-    const simP = simulatePressure ? Math.max(0.2, Math.min(1.0, 1.0 - speed * 0.07)) : 0.5;
-    pts.push({ x: curr[0], y: curr[1], dist: totalLen, p: curr[2] ?? simP });
-    prev = curr;
-  }
-  if (pts.length < 2) return [];
-  const left = [], right = [];
-  for (let i = 0; i < pts.length; i++) {
-    const p = pts[i];
-    const prevPt = pts[Math.max(0, i - 1)];
-    const nextPt = pts[Math.min(pts.length - 1, i + 1)];
-    const dx = nextPt.x - prevPt.x, dy = nextPt.y - prevPt.y;
-    const l = Math.hypot(dx, dy) || 1;
-    const nx = -dy / l, ny = dx / l;
-    const progress = totalLen > 0 ? p.dist / totalLen : 0;
-    let tFactor = 1.0;
-    if (taperStart > 0 && progress < taperStart) tFactor = Math.min(tFactor, progress / taperStart);
-    if (taperEnd > 0 && (1 - progress) < taperEnd) tFactor = Math.min(tFactor, (1 - progress) / taperEnd);
-    const rad = Math.max(0.25, (size * 0.5) * (1 - thinning * (1 - p.p)) * tFactor);
-    left.push([p.x + nx * rad, p.y + ny * rad]);
-    right.push([p.x - nx * rad, p.y - ny * rad]);
-  }
-  return [...left, ...right.reverse()];
+function freehandStroke(points, opts) {
+  const fn = globalThis.getStroke;
+  if (typeof fn !== 'function') throw new Error('perfect-freehand is not loaded');
+  return fn(points, opts);
+}
+
+function fillOutline(c, outline, color) {
+  if (!outline || outline.length < 3) return;
+  c.fillStyle = color;
+  c.beginPath();
+  c.moveTo(outline[0][0], outline[0][1]);
+  for (let i = 1; i < outline.length; i++) c.lineTo(outline[i][0], outline[i][1]);
+  c.closePath();
+  c.fill();
 }
 
 // Curve smoother: fits cubic Bézier curves (Schneider's method) or Catmull-Rom splines
@@ -617,8 +597,10 @@ function play(ctx, phases, token, onProgress, overlay, seed) {
       if (oc) {
         oc.clearRect(0, 0, W, H);
         if (hs && !token.skip) for (const h of hs) {
+          const st = h.list[h.i];
+          if (st && st.partial) fillOutline(oc, st.partial, st.ink);
           if (handTravel(clock, h.lag) <= 0) continue;
-          const st = h.list[h.i], tip = st && st.tip && st.tip(h.at);
+          const tip = st && st.tip && st.tip(h.at);
           if (tip) drawNib(oc, tip[0], tip[1], phases[pi].name === 'pencil');
         }
       }
@@ -698,44 +680,29 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
     });
   };
 
-  // Organic stroke renderer with calligraphic nib angle and variable width
+  // Pencil and detail marks. The hatch stays on runPoly. A growing mark is drawn on the
+  // overlay, then filled once, so graphite alpha is not stamped on every frame.
   const lineStroke = (pts, w, color, isPencil = false) => {
     let len = 0;
     for (let k = 1; k < pts.length; k++) len += Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
     const smoothed = isPencil ? smoothPolyline(pts, 0.3, 3) : pts;
-    // Perfect-freehand polygon generation for natural calligraphic ink lines
-    const outlinePoly = getOrganicStroke(smoothed, {
-      size: w,
-      thinning: isPencil ? 0.35 : 0.55,
-      taperStart: 0.1,
-      taperEnd: 0.15,
-      simulatePressure: true,
-    });
-    return {
-      n: smoothed.length,
-      len: Math.max(1, len),
+    const taper = Math.max(2, Math.min(14, len * 0.16));
+    const opts = {
+      size: w, thinning: isPencil ? 0.35 : 0.55, smoothing: 0.5, streamline: 0.5, simulatePressure: true,
+      start: { taper, cap: true }, end: { taper, cap: true },
+    };
+    const stroke = {
+      n: smoothed.length, len: Math.max(1, len), ink: color, partial: null,
       tip: k => smoothed[Math.min(k, smoothed.length - 1)],
       draw: (c, a, b) => {
-        if (outlinePoly.length >= 6 && !isPencil) {
-          const totalN = smoothed.length;
-          const segRatioA = a / (totalN || 1), segRatioB = b / (totalN || 1);
-          const halfLen = Math.floor(outlinePoly.length / 2);
-          const idxA = Math.floor(segRatioA * halfLen), idxB = Math.ceil(segRatioB * halfLen);
-          c.fillStyle = color;
-          c.beginPath();
-          c.moveTo(outlinePoly[idxA][0], outlinePoly[idxA][1]);
-          for (let k = idxA + 1; k <= idxB; k++) c.lineTo(outlinePoly[k][0], outlinePoly[k][1]);
-          const backA = outlinePoly.length - 1 - idxA, backB = outlinePoly.length - 1 - idxB;
-          for (let k = backB; k >= backA; k--) c.lineTo(outlinePoly[k][0], outlinePoly[k][1]);
-          c.closePath(); c.fill();
-        } else {
-          c.strokeStyle = color; c.lineWidth = w; c.lineCap = 'round'; c.lineJoin = 'round';
-          c.beginPath(); c.moveTo(smoothed[a][0], smoothed[a][1]);
-          for (let k = a + 1; k <= b; k++) c.lineTo(smoothed[k][0], smoothed[k][1]);
-          c.stroke();
-        }
+        const end = Math.max(1, b);
+        const outline = freehandStroke(smoothed.slice(0, end + 1), opts);
+        if (end < smoothed.length - 1) { stroke.partial = outline; return; }
+        stroke.partial = null;
+        fillOutline(c, outline, color);
       },
     };
+    return stroke;
   };
 
   const lineOps = (list, pts, w, color, jit, isPencil = false) => {

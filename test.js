@@ -45,7 +45,10 @@ const fs = require('fs');
 const html = fs.readFileSync('index.html', 'utf8');
 const scripts = html.match(/<script(?![^>]*src)[^>]*>([\s\S]*?)<\/script>/gi) || [];
 for (const s of scripts) {
+  if (/<script[^>]*type=["']module["']/.test(s)) continue;
   const code = s.replace(/<script[^>]*>|<\/script>/gi, '');
   assert.doesNotThrow(() => new Function(code), 'index.html inline script syntax error');
 }
+assert.ok(html.includes('perfect-freehand@1.2.3'), 'page should load perfect-freehand');
+assert.ok(!fs.readFileSync('draw.js', 'utf8').includes('function getOrganicStroke'), 'local stroke copy should be gone');
 console.log('ok index.html inline scripts syntax valid');

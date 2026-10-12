@@ -175,6 +175,10 @@
   <button id="close" type="button">close <kbd>esc</kbd></button>
 </div>
 
+<script type="module">
+  import { getStroke } from 'https://cdn.jsdelivr.net/npm/perfect-freehand@1.2.3/+esm';
+  globalThis.getStroke = getStroke;
+</script>
 <script src="https://cdn.jsdelivr.net/npm/@anvaka/streamlines@1.6.0/dist/streamlines.umd.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/d3-delaunay@6/dist/d3-delaunay.min.js"></script>
 <script src="draw.js"></script>
@@ -242,7 +246,16 @@
     else if (e.key === 'Escape') $('viewer').hidden = true;
   });
 
-  draw(seedFromHash() || newSeed());
+  const bootT = performance.now();
+  const boot = () => {
+    if (typeof getStroke !== 'function') {
+      if (performance.now() - bootT > 8000) { statusEl.textContent = 'error: perfect-freehand did not load'; return; }
+      requestAnimationFrame(boot);
+      return;
+    }
+    draw(seedFromHash() || newSeed());
+  };
+  boot();
 </script>
 </body>
 </html>
