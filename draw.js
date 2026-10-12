@@ -116,6 +116,16 @@ function taperAt(u, head, tail, headThin, tailThin) {
   const lift = tailThin + (1 - tailThin) * Math.min(1, tail > 0 ? (1 - u) / tail : 1);
   return grow * lift;
 }
+// Hands share the end of a phase. Until then, later hands lag so they are not on one clock.
+function handLag(i, count, roll) {
+  if (count <= 1) return 0;
+  return Math.min(0.28, (i / (count - 1)) * 0.16 + roll * 0.08);
+}
+function handTravel(f, lag) {
+  if (f >= 1) return 1;
+  if (f <= lag) return 0;
+  return (f - lag) / (1 - lag);
+}
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
 const noiseFor = seed => makeNoise(mulberry32((seed ^ 0x9e3779b9) >>> 0));
 
@@ -560,11 +570,12 @@ const BANDS = [[0.04, 0.5], [0.38, 0.78], [0.66, 1]];
 
 const tick = () => new Promise(res => setTimeout(res, 0));
 
-function play(ctx, phases, token, onProgress, overlay) {
+function play(ctx, phases, token, onProgress, overlay, seed) {
   const total = phases.reduce((a, p) => a + p.ms, 0);
   const oc = overlay && overlay.getContext('2d');
+  const roll = mulberry32((seed + 0xBEE) >>> 0);
   return new Promise(resolve => {
-    let pi = 0, t0 = null, before = 0, hs = null;
+    let pi = 0, t0 = null, before = 0, hs = null, clock = 0;
     const finish = ok => { if (oc) oc.clearRect(0, 0, W, H); resolve(ok); };
     function frame(now) {
       if (token.cancelled) return finish(false);
@@ -574,11 +585,15 @@ function play(ctx, phases, token, onProgress, overlay) {
         const ph = phases[pi];
         if (!ph.ready) break;
         if (t0 === null) t0 = now;
-        if (!hs) hs = ph.hands.map(list => ({ list, i: 0, at: 0, done: 0, total: list.reduce((a, st) => a + st.len + LIFT, 0) }));
+        if (!hs) hs = ph.hands.map((list, hi) => ({
+          list, i: 0, at: 0, done: 0, total: list.reduce((a, st) => a + st.len + LIFT, 0),
+          lag: handLag(hi, ph.hands.length, roll()),
+        }));
         const f = token.skip ? 1 : Math.min(1, (now - t0) / ph.ms);
+        clock = f;
         let left = 0;
         for (const h of hs) {
-          const target = f >= 1 ? Infinity : f * h.total;
+          const target = f >= 1 ? Infinity : handTravel(f, h.lag) * h.total;
           while (h.i < h.list.length) {
             const st = h.list[h.i], into = target - h.done;
             if (into <= 0) break;
@@ -602,6 +617,7 @@ function play(ctx, phases, token, onProgress, overlay) {
       if (oc) {
         oc.clearRect(0, 0, W, H);
         if (hs && !token.skip) for (const h of hs) {
+          if (handTravel(clock, h.lag) <= 0) continue;
           const st = h.list[h.i], tip = st && st.tip && st.tip(h.at);
           if (tip) drawNib(oc, tip[0], tip[1], phases[pi].name === 'pencil');
         }
@@ -660,7 +676,7 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
   ctx.save(); ctx.beginPath(); ctx.rect(MARGIN, MARGIN, W - 2 * MARGIN, H - 2 * MARGIN); ctx.clip();
 
   const phases = PHASES.map(([name, ms, hands]) => ({ name, ms, handCount: hands, hands: null, ready: false }));
-  const player = play(ctx, phases, token, onProgress, overlay);
+  const player = play(ctx, phases, token, onProgress, overlay, seed);
   const [pencilOps, outlineOps, , , , detailOps, printOps] = phases.map(() => []);
 
   const ready = (i, list) => {
@@ -1491,6 +1507,6 @@ function quad(m, [x1, y1, x2, y2, wa, wb]) {
   m.closePath();
 }
 
-const api = { makeScene, render, W, H, roadAtForTest: roadAt, burinBite, taperAt };
+const api = { makeScene, render, W, H, roadAtForTest: roadAt, burinBite, taperAt, handLag, handTravel };
 if (typeof module !== 'undefined') module.exports = api; else root.Engraver = api;
 })(this);

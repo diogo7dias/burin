@@ -29,6 +29,16 @@ assert.strictEqual(taperAt(1, 0.2, 0.4, 0.35, 0.3), 0.3);
 assert.strictEqual(taperAt(0.5, 0.2, 0.4, 0.35, 0.3), 1);
 assert.ok(Math.abs(taperAt(0.8, 0.2, 0.4, 0.35, 0.3) - 0.65) < 1e-9);
 console.log('ok taper');
+const { handLag, handTravel } = require('./draw.js');
+assert.strictEqual(handLag(0, 1, 1), 0);
+assert.strictEqual(handLag(0, 2, 0), 0);
+assert.strictEqual(handLag(1, 2, 0), 0.16);
+assert.strictEqual(handLag(3, 4, 1), 0.24);
+assert.strictEqual(handTravel(0.2, 0), 0.2);
+assert.strictEqual(handTravel(0.1, 0.16), 0);
+assert.strictEqual(handTravel(1, 0.16), 1);
+assert.ok(handTravel(0.2, handLag(0, 2, 0)) > handTravel(0.2, handLag(1, 2, 0)) * 3);
+console.log('ok hands', handTravel(0.2, 0.16));
 
 // Validate index.html inline scripts syntax
 const fs = require('fs');
