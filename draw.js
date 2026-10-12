@@ -126,6 +126,15 @@ function handTravel(f, lag) {
   if (f <= lag) return 0;
   return (f - lag) / (1 - lag);
 }
+// Four hatch gaps. A line stops at the patch edge, so the set sits tighter than 1
+// and the layer keeps its old amount of ink.
+const HATCH_GAPS = [0.68, 0.83, 0.98, 1.13];
+function hatchBucket(patchId) {
+  return Math.min(HATCH_GAPS.length - 1, Math.max(0, (patchId * HATCH_GAPS.length) | 0));
+}
+function hatchGap(patchId) {
+  return HATCH_GAPS[hatchBucket(patchId)];
+}
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
 const noiseFor = seed => makeNoise(mulberry32((seed ^ 0x9e3779b9) >>> 0));
 
@@ -1127,33 +1136,11 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
         if (ok(sx, sy) >= 0 && ok(sx - 3, sy) >= 0 && ok(sx + 3, sy) >= 0 && ok(sx, sy - 3) >= 0 && ok(sx, sy + 3) >= 0) seeds.push({ x: sx, y: sy });
       }
       if (!seeds.length) continue;
-      const lines = [], placed = [];
-      let pending = seeds, runs = 0, idle = 0;
-      while (pending.length && !token.cancelled && runs++ < 60 && idle < 15) {
-        const before = lines.length;
-        const job = SL({
-          vectorField: p => {
-            if (ok(p.x, p.y) < 0) return;
-            const [dx, dy] = dir(p.x, p.y), a = gr.rot[f] + (patch(p.x, p.y) - 0.5) * 0.35, cr = Math.cos(a), sr = Math.sin(a);
-            return { x: dx * cr - dy * sr, y: dx * sr + dy * cr };
-          },
-          boundingBox: { left: bx[0] - 2, top: bx[1] - 2, width: bx[2] - bx[0] + 4, height: bx[3] - bx[1] + 4 },
-          seed: pending, dSep: gr.sp, dTest: gr.sp * 0.55, timeStep: 1.6,
-          stepsPerIteration: 400, maxTimePerIteration: 14,
-          onStreamlineAdded: pts => { if (token.cancelled) job.dispose(); else { lines.push(pts.map(p => [p.x, p.y])); placed.push(...pts); } },
-        });
-        const grid = job.getGrid();
-        for (const q of placed) grid.occupyCoordinates(q);
-        await job.run();
-        pending = pending.filter(q => !grid.isTaken(q.x, q.y, d => d < gr.sp));
-        idle = lines.length > before ? 0 : idle + 1;
-      }
-      if (token.cancelled) return player;
       // Cut each streamline into pen strokes: a hand's length, then a small lift.
       // A stroke starts only where the tone is clearly dark enough and runs on
       // until it is clearly too light, so light areas never crumble into specks.
       // Each stroke bows slightly, as a wrist swings, and wavers a little.
-      for (const pts of lines) {
+      const cutLines = lines => { for (const pts of lines) {
         // Each line reads patch edges at its own small offset, so the ends of
         // neighbouring strokes stagger instead of ruling a seam.
         let run = [], len = 0, gap = R2() * 6, id = -1;
@@ -1185,6 +1172,35 @@ async function render(canvas, seed, { onProgress = () => {}, token = {}, overlay
           run.push(x, y, gr.wk * (0.5 + 1.6 * Math.pow(clamp(lv), 1.3)));
         }
         cut();
+      }
+      };
+      for (let bi = 0; bi < HATCH_GAPS.length; bi++) {
+        let pending = seeds.filter(s => hatchBucket(patch(s.x, s.y)) === bi);
+        if (!pending.length) continue;
+        const sep = gr.sp * HATCH_GAPS[bi];
+        const lines = [], placed = [];
+        let runs = 0, idle = 0;
+        while (pending.length && !token.cancelled && runs++ < 60 && idle < 15) {
+          const before = lines.length;
+          const job = SL({
+            vectorField: p => {
+              if (ok(p.x, p.y) < 0 || hatchBucket(patch(p.x, p.y)) !== bi) return;
+              const [dx, dy] = dir(p.x, p.y), a = gr.rot[f] + (patch(p.x, p.y) - 0.5) * 0.35, cr = Math.cos(a), sr = Math.sin(a);
+              return { x: dx * cr - dy * sr, y: dx * sr + dy * cr };
+            },
+            boundingBox: { left: bx[0] - 2, top: bx[1] - 2, width: bx[2] - bx[0] + 4, height: bx[3] - bx[1] + 4 },
+            seed: pending, dSep: sep, dTest: sep * 0.55, timeStep: 1.6,
+            stepsPerIteration: 400, maxTimePerIteration: 14,
+            onStreamlineAdded: pts => { if (token.cancelled) job.dispose(); else { lines.push(pts.map(p => [p.x, p.y])); placed.push(...pts); } },
+          });
+          const grid = job.getGrid();
+          for (const q of placed) grid.occupyCoordinates(q);
+          await job.run();
+          pending = pending.filter(q => !grid.isTaken(q.x, q.y, d => d < sep));
+          idle = lines.length > before ? 0 : idle + 1;
+        }
+        if (token.cancelled) return player;
+        cutLines(lines);
       }
     }
   }
@@ -1474,6 +1490,6 @@ function quad(m, [x1, y1, x2, y2, wa, wb]) {
   m.closePath();
 }
 
-const api = { makeScene, render, W, H, roadAtForTest: roadAt, burinBite, taperAt, handLag, handTravel };
+const api = { makeScene, render, W, H, roadAtForTest: roadAt, burinBite, taperAt, handLag, handTravel, hatchGap };
 if (typeof module !== 'undefined') module.exports = api; else root.Engraver = api;
 })(this);

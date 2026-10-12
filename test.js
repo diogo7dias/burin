@@ -39,6 +39,14 @@ assert.strictEqual(handTravel(0.1, 0.16), 0);
 assert.strictEqual(handTravel(1, 0.16), 1);
 assert.ok(handTravel(0.2, handLag(0, 2, 0)) > handTravel(0.2, handLag(1, 2, 0)) * 3);
 console.log('ok hands', handTravel(0.2, 0.16));
+const { hatchGap } = require('./draw.js');
+assert.strictEqual(hatchGap(0), 0.68);
+assert.strictEqual(hatchGap(0.25), 0.83);
+assert.strictEqual(hatchGap(0.5), 0.98);
+assert.strictEqual(hatchGap(0.75), 1.13);
+assert.strictEqual(hatchGap(0.999), 1.13);
+assert.ok(Math.abs((0.68 + 0.83 + 0.98 + 1.13) / 4 - 0.905) < 1e-9);
+console.log('ok gaps', hatchGap(0), hatchGap(0.75));
 
 // Validate index.html inline scripts syntax
 const fs = require('fs');
