@@ -238,7 +238,7 @@
     if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, textarea')) return;
     if (e.key === 'n') fresh();
     else if (e.key === 's') save();
-    else if (e.key === ' ' && e.target === document.body) { e.preventDefault(); finish(); };
+    else if (e.key === ' ' && e.target === document.body) { e.preventDefault(); finish(); }
     else if (e.key === 'Escape') $('viewer').hidden = true;
   });
 
