@@ -21,8 +21,8 @@ Every seed generates a completely distinct, deterministic engraving drawn before
 - **Seeded Determinism:** Every plate is derived strictly from a numerical seed. Re-visiting the same seed (or sharing the URL hash) reproduces the exact same scene.
 - **Stroke-by-Stroke Animation:** Watch the plate evolve through simulated multi-hand engraving passes over ~60 seconds, or finish instantaneously with the tap of a key.
 - **Doré Chiaroscuro & Tone Mapping:** Light pools dramatically on points of interest (castles, ruins, waterfalls, sun rays) while valleys and crags sink into deep crosshatched shadow.
-- **Streamline-Driven Hatching:** Shading lines follow the natural curvature and contours of surfaces—down rock falls, curling along cloud bellies, swirling through leaves, and following winding roads.
-- **Zero-Dependency Core:** Pure static HTML5 Canvas and JavaScript with no build steps or heavy bundlers required.
+- **Streamline-Driven Hatching:** Shading lines follow the curvature of each surface: down rock falls, along cloud bellies, through leaves, and along the road. Each line then leaves that even gap.
+- **No build step:** Static HTML and JavaScript. Streamlines and perfect-freehand load from a CDN.
 
 ---
 
@@ -56,7 +56,7 @@ graph LR
 1. **Scene Composition:** Procedurally calculates horizon heights, sun/moon positions, mountain profiles via fractal Brownian motion (fBm), structures, trees, figures, and roads.
 2. **Pencil Underdrawing:** Light, searching graphite strokes overshoot contours, sketching the initial layout.
 3. **Tone Map & Vector Direction Fields:** A multi-layered tone mask establishes local light values and directional tangent fields for each surface type.
-4. **Hatching Passes (1/3, 2/3, 3/3):** Evenly spaced streamlines trace the vector fields. Progressive passes add crosshatching as tone deepens.
+4. **Hatching Passes (1/3, 2/3, 3/3):** Streamlines trace the vector fields. Each line then shifts off that gap, turns a little, swells through the stroke, and lifts on its own length. Later passes add crosshatching as the tone deepens. The burin is held at 45°: a hairline along the blade, heavy across it.
 5. **Fine Engraving Details:** Fissures in rock faces, ashlar masonry courses, ivy tendrils, grass blades, birds in flight, and shaded figures.
 6. **Pulling the Print:** Simulates ink absorption into rag paper, pooling in dense hatching and leaving micro-speckles across solid blacks.
 
@@ -104,9 +104,20 @@ node test.js
 
 ---
 
+## The pen
+
+The same seed still finishes as the same plate. What changed is the cut:
+
+- The blade is held at 45°. Along it the width factor is `0.45`. Across it the width factor is `1.31`.
+- Each ink stroke picks its own attack and lift from the seed.
+- Hands in one pass are staggered, so they are not on one clock. Skipping to the end does not change the plate.
+- Pencil marks and the small detail cuts use [perfect-freehand](https://github.com/steveruizok/perfect-freehand) 1.2.3. Hatch and outlines stay filled ribbons.
+- Hatch lines share one flow per pass (`dSep` is the layer spacing). Each whole line then shifts by up to `0.675` of that gap and bows by up to `0.225`. Width is multiplied by `0.55` at the ends and `1.35` in the middle. Castle walls and far hills turn less (`0.16` against `0.5`), so the building stays straight.
+
 ## 📚 Credits & Acknowledgements
 
-- **Hatching Streamlines:** Powered by [@anvaka/streamlines](https://github.com/anvaka/streamlines), implementing Jobard-Lefer streamline placement.
+- **Hatching Streamlines:** Powered by [@anvaka/streamlines](https://github.com/anvaka/streamlines) 1.6.0, implementing Jobard-Lefer streamline placement.
+- **Pencil and detail marks:** [perfect-freehand](https://github.com/steveruizok/perfect-freehand) 1.2.3, MIT.
 - **Aesthetic Inspiration:** The dramatic biblical and literary wood engravings of [Gustave Doré](https://en.wikipedia.org/wiki/Gustave_Dor%C3%A9) (1832–1883).
 
 ---
