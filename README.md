@@ -75,7 +75,7 @@ graph LR
 
 ## 🛠️ Running Locally
 
-The project consists entirely of static files (`index.html`, `draw.js`) with zero build dependencies.
+The project consists entirely of static files (`index.html`, `draw.js` and the parts in `engraver/`) with zero build dependencies. `index.html` loads the `engraver/*.js` parts with plain script tags before `draw.js`, which exposes the `Engraver` API; under Node, `draw.js` requires the parts itself.
 
 ### 1. Clone the Repository
 ```sh
