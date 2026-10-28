@@ -55,5 +55,6 @@ for (const s of scripts) {
   assert.doesNotThrow(() => new Function(code), 'index.html inline script syntax error');
 }
 assert.ok(html.includes('perfect-freehand@1.2.3'), 'page should load perfect-freehand');
-assert.ok(!fs.readFileSync('draw.js', 'utf8').includes('function getOrganicStroke'), 'local stroke copy should be gone');
+const engraverSrc = ['draw.js', ...fs.readdirSync('engraver').map(f => 'engraver/' + f)].map(f => fs.readFileSync(f, 'utf8')).join('\n');
+assert.ok(!engraverSrc.includes('function getOrganicStroke'), 'local stroke copy should be gone');
 console.log('ok index.html inline scripts syntax valid');
